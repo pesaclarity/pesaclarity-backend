@@ -50,6 +50,10 @@ To run everything in containers instead: `docker compose up --build`.
 
 Access tokens last 10 minutes; refresh tokens rotate on every use and expire after 30 days. The vault keeps the newest 10 backups per account.
 
+### Retention
+
+`ngome-purge` deletes one-time codes 24 hours after they expire and sign-in events after 90 days (`NGOME_RETENTION_*` in `.env.example`; keep them in line with the privacy policy). Run it daily from cron or your scheduler, for example `docker compose run --rm api ngome-purge`. It is safe to run more than once and exits non-zero on failure.
+
 ### Federated learning
 
 `ngome.fl.server:app` is a Flower `ServerApp` running FedAvg under SecAgg+, with updates clipped on the phone and Gaussian noise added on the server. It needs the `fl` extra and runs on a Flower SuperLink, separately from the API. Its settings (`NGOME_FL_*` in `.env.example`) are placeholders until pesaclarity-ml publishes a privacy budget.
@@ -81,7 +85,7 @@ CI also applies the migrations to Postgres, checks they match the models and bui
 
 ## Not done yet
 
-Named `TODO` markers in the code cover: a real SMS provider, Google ID-token verification, Play Integrity checks on uploads, object storage for large backups, purging spent sign-in codes, and loading and publishing the federated model.
+Named `TODO` markers in the code cover: a real SMS provider, Google ID-token verification, Play Integrity checks on uploads, object storage for large backups, and loading and publishing the federated model.
 
 ## Licence
 
