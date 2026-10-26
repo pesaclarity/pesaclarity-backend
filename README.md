@@ -40,7 +40,7 @@ To run everything in containers instead: `docker compose up --build`.
 | --- | --- |
 | `GET /health`, `GET /health/ready` | Liveness and database readiness |
 | `POST /v1/auth/phone/start`, `POST /v1/auth/phone/verify` | Phone sign-in with a one-time code |
-| `POST /v1/auth/google` | Google sign-in (Play Store build; off unless enabled) |
+| `POST /v1/auth/google` | Google sign-in (Play Store build; off unless enabled with client ids) |
 | `POST /v1/auth/refresh` | Rotate tokens; reusing an old refresh token signs that device out |
 | `POST /v1/auth/sign-out` | Sign this device out |
 | `GET /v1/auth/devices`, `DELETE /v1/auth/devices/{id}` | Device list and remote sign-out |
@@ -49,6 +49,8 @@ To run everything in containers instead: `docker compose up --build`.
 | `GET /v1/vault/backups`, `GET` / `DELETE /v1/vault/backups/{id}` | List, download and delete backups |
 
 Access tokens last 10 minutes; refresh tokens rotate on every use and expire after 30 days. The vault keeps the newest 10 backups per account.
+
+Google sign-in is off by default. To turn it on, set `NGOME_GOOGLE_SIGN_IN_ENABLED=true` and list the accepted OAuth client ids in `NGOME_GOOGLE_CLIENT_IDS`. ID tokens are checked against Google's published signing keys (cached, and refetched when Google rotates them), plus audience, issuer and expiry. Only the token's subject is kept, as a keyed hash.
 
 ### Federated learning
 
@@ -81,7 +83,7 @@ CI also applies the migrations to Postgres, checks they match the models and bui
 
 ## Not done yet
 
-Named `TODO` markers in the code cover: a real SMS provider, Google ID-token verification, Play Integrity checks on uploads, object storage for large backups, purging spent sign-in codes, and loading and publishing the federated model.
+Named `TODO` markers in the code cover: a real SMS provider, Play Integrity checks on uploads, object storage for large backups, purging spent sign-in codes, and loading and publishing the federated model.
 
 ## Licence
 

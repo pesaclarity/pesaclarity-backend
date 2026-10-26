@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     google_sign_in_enabled: bool = False
     google_client_ids: list[str] = Field(default_factory=list)
+    google_token_leeway_seconds: int = Field(default=60, ge=0, le=300)
 
     vault_max_backup_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
     vault_keep_backups: int = Field(default=10, ge=1, le=100)
