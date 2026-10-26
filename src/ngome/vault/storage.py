@@ -5,9 +5,12 @@ says nothing about who a backup belongs to.
 """
 
 import asyncio
+import os
+import re
 import secrets
 from collections.abc import AsyncIterable, AsyncIterator
 from contextlib import AsyncExitStack, suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from aiobotocore.config import AioConfig
@@ -28,6 +31,7 @@ DOWNLOAD_CHUNK_BYTES = 64 * 1024
 # S3 needs every part but the last to be at least 5 MiB; R2 also wants them all the same size.
 MIN_PART_BYTES = 5 * 1024 * 1024
 DEFAULT_PART_BYTES = 8 * 1024 * 1024
+_SAFE_KEY = re.compile(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*")
 
 
 class BlobNotFoundError(Exception):
@@ -97,6 +101,66 @@ async def _chunked(data: bytes) -> AsyncIterator[bytes]:
     view = memoryview(data)
     for start in range(0, len(view), DOWNLOAD_CHUNK_BYTES):
         yield bytes(view[start : start + DOWNLOAD_CHUNK_BYTES])
+
+
+class FilesystemBlobStore:
+    """Keeps each object as a file under ``root``. For development, tests and single-node
+    installs; streams both ways, so memory use stays at one chunk.
+
+    Writes go to a temporary file that is renamed into place only once complete, so a reader
+    never sees a partial object and a failed upload leaves nothing behind.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root.resolve()
+        self._tmp = self._root / ".partial"
+
+    def _path(self, key: str) -> Path:
+        if not _SAFE_KEY.fullmatch(key):
+            raise ValueError("invalid object key")
+        return self._root / key
+
+    async def put(self, key: str, chunks: AsyncIterable[bytes]) -> None:
+        path = self._path(key)
+        await asyncio.to_thread(self._tmp.mkdir, parents=True, exist_ok=True)
+        tmp = self._tmp / secrets.token_hex(16)
+        handle = await asyncio.to_thread(tmp.open, "wb")
+        try:
+            try:
+                async for chunk in chunks:
+                    await asyncio.to_thread(handle.write, chunk)
+                await asyncio.to_thread(handle.flush)
+                await asyncio.to_thread(os.fsync, handle.fileno())
+            finally:
+                await asyncio.to_thread(handle.close)
+            await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(os.replace, tmp, path)
+        except BaseException:
+            with suppress(OSError):
+                await asyncio.shield(asyncio.to_thread(tmp.unlink, missing_ok=True))
+            raise
+
+    async def open(self, key: str) -> AsyncIterator[bytes]:
+        path = self._path(key)
+        try:
+            handle = await asyncio.to_thread(path.open, "rb")
+        except FileNotFoundError:
+            raise BlobNotFoundError(key) from None
+
+        async def stream() -> AsyncIterator[bytes]:
+            try:
+                while chunk := await asyncio.to_thread(handle.read, DOWNLOAD_CHUNK_BYTES):
+                    yield chunk
+            finally:
+                handle.close()
+
+        return stream()
+
+    async def delete(self, key: str) -> None:
+        await asyncio.to_thread(self._path(key).unlink, missing_ok=True)
+
+    async def aclose(self) -> None:
+        return None
 
 
 class S3BlobStore:
@@ -228,6 +292,10 @@ def build_blob_store(
     match settings.vault_blob_store:
         case "postgres":
             return PostgresBlobStore(sessionmaker)
+        case "filesystem":
+            if settings.vault_fs_root is None:
+                raise ValueError("vault_fs_root is required for the filesystem blob store")
+            return FilesystemBlobStore(settings.vault_fs_root)
         case "s3":
             if not settings.vault_s3_bucket:
                 raise ValueError("vault_s3_bucket is required for the s3 blob store")

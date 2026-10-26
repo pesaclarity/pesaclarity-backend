@@ -1,6 +1,7 @@
 """Runtime settings, read from the environment (prefix ``NGOME_``) or a ``.env`` file."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import Field, SecretStr, model_validator
@@ -45,10 +46,18 @@ class Settings(BaseSettings):
 
     vault_max_backup_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
     vault_keep_backups: int = Field(default=10, ge=1, le=100)
-    vault_blob_store: Literal["postgres", "s3"] = Field(
+    vault_max_account_bytes: int = Field(
+        default=256 * 1024 * 1024,
+        ge=1024,
+        description="Per-account quota: the total size of the backups an account keeps.",
+    )
+    vault_blob_store: Literal["postgres", "filesystem", "s3"] = Field(
         default="postgres",
-        description="Where ciphertext lives. 'postgres' suits development and tests; 's3' is any "
-        "S3-compatible store (AWS S3, Cloudflare R2, MinIO).",
+        description="Where ciphertext lives. 'postgres' and 'filesystem' suit development and "
+        "tests; 's3' is any S3-compatible store (AWS S3, Cloudflare R2, MinIO).",
+    )
+    vault_fs_root: Path | None = Field(
+        default=None, description="Directory for the 'filesystem' blob store."
     )
     vault_s3_bucket: str | None = None
     vault_s3_endpoint_url: str | None = Field(
@@ -72,6 +81,8 @@ class Settings(BaseSettings):
             raise ValueError("google_client_ids is required when Google sign-in is enabled")
         if self.vault_blob_store == "s3" and not self.vault_s3_bucket:
             raise ValueError("vault_s3_bucket is required when vault_blob_store is 's3'")
+        if self.vault_blob_store == "filesystem" and self.vault_fs_root is None:
+            raise ValueError("vault_fs_root is required when vault_blob_store is 'filesystem'")
         return self
 
 

@@ -17,6 +17,7 @@ from ngome.vault.storage import (
     MIN_PART_BYTES,
     BlobNotFoundError,
     BlobStore,
+    FilesystemBlobStore,
     PostgresBlobStore,
     S3BlobStore,
     new_object_key,
@@ -66,6 +67,35 @@ async def check_contract(store: BlobStore, large: bytes) -> None:
 async def test_postgres_store(app: FastAPI, blob_store: BlobStore) -> None:
     assert isinstance(blob_store, PostgresBlobStore)
     await check_contract(blob_store, os.urandom(300 * 1024))
+
+
+async def test_filesystem_store(tmp_path: Path) -> None:
+    store = FilesystemBlobStore(tmp_path / "blobs")
+    await check_contract(store, os.urandom(300 * 1024))
+    # The interrupted upload left no partial file behind.
+    leftovers = [p for p in (tmp_path / "blobs").rglob("*") if p.is_file()]
+    assert leftovers == []
+
+
+@pytest.mark.parametrize("key", ["../escape", "/etc/passwd", "backups/../../x", "a//b", ""])
+async def test_filesystem_store_refuses_unsafe_keys(tmp_path: Path, key: str) -> None:
+    store = FilesystemBlobStore(tmp_path / "blobs")
+    with pytest.raises(ValueError, match="invalid object key"):
+        await store.put(key, chunks_of(b"x"))
+    with pytest.raises(ValueError, match="invalid object key"):
+        await store.open(key)
+    with pytest.raises(ValueError, match="invalid object key"):
+        await store.delete(key)
+
+
+def test_filesystem_settings_need_a_root(settings: Settings) -> None:
+    with pytest.raises(ValueError, match="vault_fs_root"):
+        Settings(**{**settings.model_dump(), "vault_blob_store": "filesystem"})
+
+
+def test_filesystem_store_is_built_from_settings(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, vault_blob_store="filesystem", vault_fs_root=tmp_path / "b")
+    assert isinstance(create_app(settings).state.blob_store, FilesystemBlobStore)
 
 
 def test_s3_settings_need_a_bucket(settings: Settings) -> None:
