@@ -6,6 +6,7 @@ readme = "README.md"
 license = "AGPL-3.0-only"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "aiobotocore>=3.10.0",
     "alembic>=1.20.1",
     "asyncpg>=0.32.0",
     "fastapi>=0.162.0",
@@ -40,6 +41,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.1",
     "ruff>=0.17.2",
+    "types-aiobotocore[s3]>=3.10.0",
 ]
 
 [tool.ruff]
@@ -70,3 +72,6 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = "-ra --strict-markers"
+markers = [
+    "object_storage: needs an S3-compatible endpoint (skipped unless NGOME_TEST_S3_ENDPOINT_URL is set)",
+]

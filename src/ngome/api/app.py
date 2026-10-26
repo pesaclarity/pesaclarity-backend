@@ -15,6 +15,7 @@ from ngome.core.config import Settings, get_settings
 from ngome.core.logging import configure_logging, get_logger
 from ngome.db.session import create_engine, create_sessionmaker
 from ngome.vault import router as vault_router
+from ngome.vault.storage import build_blob_store
 
 log = get_logger("ngome.http")
 
@@ -29,10 +30,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level, json=settings.log_json)
     engine = create_engine(settings.database_url)
+    sessionmaker = create_sessionmaker(engine)
+    blob_store = build_blob_store(settings, sessionmaker)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
+        await blob_store.aclose()
         await engine.dispose()
 
     app = FastAPI(
@@ -45,7 +49,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.engine = engine
-    app.state.sessionmaker = create_sessionmaker(engine)
+    app.state.sessionmaker = sessionmaker
+    app.state.blob_store = blob_store
     app.state.sms_sender = build_sms_sender(settings)
     app.state.google_verifier = build_google_verifier(settings)
 
