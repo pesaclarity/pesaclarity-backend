@@ -40,6 +40,20 @@ class Settings(BaseSettings):
 
     vault_max_backup_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
     vault_keep_backups: int = Field(default=10, ge=1, le=100)
+    vault_blob_store: Literal["postgres", "s3"] = Field(
+        default="postgres",
+        description="Where ciphertext lives. 'postgres' suits development and tests; 's3' is any "
+        "S3-compatible store (AWS S3, Cloudflare R2, MinIO).",
+    )
+    vault_s3_bucket: str | None = None
+    vault_s3_endpoint_url: str | None = Field(
+        default=None, description="Leave unset for AWS; set for R2 or MinIO."
+    )
+    vault_s3_region: str | None = None
+    vault_s3_access_key_id: SecretStr | None = None
+    vault_s3_secret_access_key: SecretStr | None = None
+    vault_s3_addressing_style: Literal["auto", "virtual", "path"] = "auto"
+    vault_s3_part_bytes: int = Field(default=8 * 1024 * 1024, ge=5 * 1024 * 1024)
 
     @model_validator(mode="after")
     def _check_secrets(self) -> Self:
@@ -51,6 +65,8 @@ class Settings(BaseSettings):
             raise ValueError("the console SMS provider prints codes and must not run in production")
         if self.google_sign_in_enabled and not self.google_client_ids:
             raise ValueError("google_client_ids is required when Google sign-in is enabled")
+        if self.vault_blob_store == "s3" and not self.vault_s3_bucket:
+            raise ValueError("vault_s3_bucket is required when vault_blob_store is 's3'")
         return self
 
 

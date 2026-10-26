@@ -4,11 +4,16 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
+from fastapi.responses import StreamingResponse
 
-from ngome.api.deps import PrincipalDep, SessionDep, SettingsDep
+from ngome.api.deps import BlobStoreDep, PrincipalDep, SessionDep, SettingsDep
+from ngome.core.logging import get_logger
 from ngome.vault import service
 from ngome.vault.models import Backup
 from ngome.vault.schemas import BackupOut
+from ngome.vault.storage import BlobNotFoundError
+
+log = get_logger(__name__)
 
 # TODO(integrity): accept uploads only from genuine installs once Play Integrity checks land.
 router = APIRouter(prefix="/v1/vault/backups", tags=["vault"])
@@ -40,6 +45,7 @@ async def upload(
     principal: PrincipalDep,
     session: SessionDep,
     settings: SettingsDep,
+    store: BlobStoreDep,
     content_type: Annotated[str | None, Header()] = None,
     x_content_sha256: Annotated[str | None, Header(pattern=r"^[0-9a-fA-F]{64}$")] = None,
 ) -> BackupOut:
@@ -57,11 +63,12 @@ async def upload(
     ):
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Backup is too large")
     try:
-        ciphertext = await service.read_capped(request.stream(), settings.vault_max_backup_bytes)
         backup = await service.store_backup(
             session,
+            store,
             principal.account_id,
-            ciphertext,
+            request.stream(),
+            max_bytes=settings.vault_max_backup_bytes,
             expected_sha256=x_content_sha256,
             keep=settings.vault_keep_backups,
         )
@@ -90,18 +97,31 @@ async def list_backups(principal: PrincipalDep, session: SessionDep) -> list[Bac
         200: {"content": {_OCTET_STREAM: {"schema": {"type": "string", "format": "binary"}}}}
     },
 )
-async def download(backup_id: uuid.UUID, principal: PrincipalDep, session: SessionDep) -> Response:
-    backup = await service.get_backup(session, principal.account_id, backup_id, with_data=True)
+async def download(
+    backup_id: uuid.UUID, principal: PrincipalDep, session: SessionDep, store: BlobStoreDep
+) -> Response:
+    backup = await service.get_backup(session, principal.account_id, backup_id)
     if backup is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup not found")
-    return Response(
-        content=backup.ciphertext,
+    try:
+        chunks = await store.open(backup.object_key)
+    except BlobNotFoundError:
+        log.error("vault.blob_missing", backup_id=str(backup.id))
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup not found") from None
+    return StreamingResponse(
+        chunks,
         media_type=_OCTET_STREAM,
-        headers={"X-Content-SHA256": backup.sha256, "Cache-Control": "no-store"},
+        headers={
+            "Content-Length": str(backup.size_bytes),
+            "X-Content-SHA256": backup.sha256,
+            "Cache-Control": "no-store",
+        },
     )
 
 
 @router.delete("/{backup_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete(backup_id: uuid.UUID, principal: PrincipalDep, session: SessionDep) -> None:
-    if not await service.delete_backup(session, principal.account_id, backup_id):
+async def delete(
+    backup_id: uuid.UUID, principal: PrincipalDep, session: SessionDep, store: BlobStoreDep
+) -> None:
+    if not await service.delete_backup(session, store, principal.account_id, backup_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Backup not found")

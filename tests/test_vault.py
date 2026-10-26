@@ -2,10 +2,17 @@ import hashlib
 import os
 
 import httpx
+import pytest
 
 from tests.conftest import OTHER_PHONE, FakeSms, bearer, sign_in
 
 OCTET = {"Content-Type": "application/octet-stream"}
+
+
+@pytest.fixture(params=["memory", "postgres"])
+def blob_store_kind(request: pytest.FixtureRequest) -> str:
+    kind: str = request.param
+    return kind
 
 
 def ciphertext(size: int = 256) -> bytes:
@@ -102,3 +109,15 @@ async def test_keeps_only_the_newest_backups(client: httpx.AsyncClient, sms: Fak
 
     listed = await client.get("/v1/vault/backups", headers=auth)
     assert [b["id"] for b in listed.json()] == list(reversed(ids[-3:]))
+
+
+async def test_download_streams_the_whole_backup(client: httpx.AsyncClient, sms: FakeSms) -> None:
+    auth = bearer(await sign_in(client, sms))
+    blob = ciphertext(4096)
+    created = await client.post("/v1/vault/backups", content=blob, headers={**auth, **OCTET})
+    async with client.stream(
+        "GET", f"/v1/vault/backups/{created.json()['id']}", headers=auth
+    ) as response:
+        assert response.headers["content-length"] == str(len(blob))
+        received = b"".join([chunk async for chunk in response.aiter_bytes()])
+    assert received == blob

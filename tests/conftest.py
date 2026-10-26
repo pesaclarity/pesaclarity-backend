@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,6 +11,7 @@ from ngome.api.app import create_app
 from ngome.auth.providers import GoogleIdentity, InvalidGoogleTokenError
 from ngome.core.config import Settings
 from ngome.db.models import Base
+from ngome.vault.storage import BlobNotFoundError, BlobStore
 
 # Obviously fake Kenyan numbers.
 PHONE = "0700 000 000"
@@ -35,6 +36,41 @@ class FakeGoogle:
         if not id_token.startswith("valid:"):
             raise InvalidGoogleTokenError
         return GoogleIdentity(subject=id_token.removeprefix("valid:"))
+
+
+class MemoryBlobStore:
+    """In-memory :class:`BlobStore` that can be told to fail deletes."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.fail_deletes = False
+        self.delete_calls = 0
+
+    async def put(self, key: str, chunks: AsyncIterable[bytes]) -> None:
+        buffer = bytearray()
+        async for chunk in chunks:
+            buffer.extend(chunk)
+        self.objects[key] = bytes(buffer)
+
+    async def open(self, key: str) -> AsyncIterator[bytes]:
+        if key not in self.objects:
+            raise BlobNotFoundError(key)
+        data = self.objects[key]
+
+        async def stream() -> AsyncIterator[bytes]:
+            for start in range(0, len(data), 100):
+                yield data[start : start + 100]
+
+        return stream()
+
+    async def delete(self, key: str) -> None:
+        self.delete_calls += 1
+        if self.fail_deletes:
+            raise OSError("object store unavailable")
+        self.objects.pop(key, None)
+
+    async def aclose(self) -> None:
+        return None
 
 
 def make_settings(tmp_path: Path, **overrides: object) -> Settings:
@@ -64,14 +100,28 @@ def sms() -> FakeSms:
 
 
 @pytest.fixture
-async def app(settings: Settings, sms: FakeSms) -> AsyncIterator[FastAPI]:
+def blob_store_kind() -> str:
+    """Which blob store the app uses: ``memory`` (the fake) or ``postgres`` (the real one)."""
+    return "memory"
+
+
+@pytest.fixture
+async def app(settings: Settings, sms: FakeSms, blob_store_kind: str) -> AsyncIterator[FastAPI]:
     application = create_app(settings)
+    if blob_store_kind == "memory":
+        application.state.blob_store = MemoryBlobStore()
     application.state.sms_sender = sms
     application.state.google_verifier = FakeGoogle()
     async with application.state.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield application
     await application.state.engine.dispose()
+
+
+@pytest.fixture
+def blob_store(app: FastAPI) -> BlobStore:
+    store: BlobStore = app.state.blob_store
+    return store
 
 
 @pytest.fixture
