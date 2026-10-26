@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NGOME_JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-real
+  NGOME_CONTACT_PEPPER: ci-only-contact-pepper-not-used-anywhere-real
+
+jobs:
+  checks:
+    name: Lint, types and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked --all-extras
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest
+
+  migrations:
+    name: Migrations on Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ngome
+          POSTGRES_PASSWORD: ngome
+          POSTGRES_DB: ngome
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ngome -d ngome"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      NGOME_DATABASE_URL: postgresql+asyncpg://ngome:ngome@localhost:5432/ngome
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run alembic upgrade head
+      - name: Models and migrations agree
+        run: uv run alembic check
+      - run: uv run alembic downgrade base
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: ngome:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
