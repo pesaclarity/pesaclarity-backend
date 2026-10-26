@@ -1,9 +1,12 @@
 """Retention: delete sign-in data once it is past the period we promise to keep it.
 
-Run daily from cron or a scheduled job with ``ngome-purge``.
+Run daily from cron, a systemd timer or a Kubernetes CronJob with ``ngome-purge`` (see the
+README). The same run retries backup objects still queued for deletion.
 """
 
 import asyncio
+import dataclasses
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -16,6 +19,8 @@ from ngome.core.config import Settings, get_settings
 from ngome.core.logging import configure_logging, get_logger
 from ngome.core.security import utcnow
 from ngome.db.session import create_engine, create_sessionmaker
+from ngome.vault.service import SWEEP_BATCH, sweep_deletions
+from ngome.vault.storage import BlobStore, build_blob_store
 
 log = get_logger(__name__)
 
@@ -24,6 +29,8 @@ log = get_logger(__name__)
 class PurgeResult:
     otp_challenges: int
     auth_events: int
+    blobs_deleted: int = 0
+    blobs_failed: int = 0
 
 
 async def purge_expired(
@@ -47,17 +54,43 @@ async def purge_expired(
     return result
 
 
+async def sweep_all_deletions(
+    session: AsyncSession, store: BlobStore, *, max_batches: int = 100
+) -> tuple[int, int]:
+    """Work through the blob deletion queue in batches. Returns ``(deleted, failed)``.
+
+    Stops at the first batch with a failure: failed keys stay at the head of the queue, so
+    another batch would only retry them.
+    """
+    deleted = failed = 0
+    for _ in range(max_batches):
+        done, failures = await sweep_deletions(session, store, limit=SWEEP_BATCH)
+        deleted += done
+        failed += failures
+        if failures or done < SWEEP_BATCH:
+            break
+    return deleted, failed
+
+
 async def run(settings: Settings) -> PurgeResult:
     engine = create_engine(settings.database_url)
+    sessionmaker = create_sessionmaker(engine)
+    store = build_blob_store(settings, sessionmaker)
     try:
-        async with create_sessionmaker(engine)() as session:
-            return await purge_expired(session, settings)
+        async with sessionmaker() as session:
+            result = await purge_expired(session, settings)
+            deleted, failed = await sweep_all_deletions(session, store)
+        return dataclasses.replace(result, blobs_deleted=deleted, blobs_failed=failed)
     finally:
+        await store.aclose()
         await engine.dispose()
 
 
 def main() -> None:
-    """Entry point for ``ngome-purge``. Exits non-zero if the purge fails."""
+    """Entry point for ``ngome-purge``. Exits non-zero if the purge fails or a queued backup
+    object could not be deleted (it stays queued for the next run)."""
     settings = get_settings()
     configure_logging(settings.log_level, json=settings.log_json)
-    asyncio.run(run(settings))
+    result = asyncio.run(run(settings))
+    if result.blobs_failed:
+        sys.exit(1)

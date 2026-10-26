@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     google_client_ids: list[str] = Field(default_factory=list)
     google_token_leeway_seconds: int = Field(default=60, ge=0, le=300)
 
+    # Provisional defaults pending a final decision for the privacy policy.
     # Keep at least an hour of codes: the per-hour rate limit counts them.
     retention_otp_challenge_hours: int = Field(default=24, ge=1, le=24 * 30)
     retention_auth_event_days: int = Field(default=90, ge=1, le=730)
