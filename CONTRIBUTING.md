@@ -22,7 +22,7 @@ uv run mypy
 uv run pytest
 ```
 
-All four must pass; CI runs the same checks, plus the migrations on Postgres and a Docker build.
+All four must pass; CI runs the same checks, plus the object storage tests on MinIO, the migrations on Postgres and a Docker build. To run the object storage tests locally, see "Testing" in the README.
 
 ## Rules for this server
 
