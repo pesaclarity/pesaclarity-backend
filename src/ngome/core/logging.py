@@ -56,7 +56,9 @@ def configure_logging(level: str = "INFO", *, json: bool = True) -> None:
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(logging.getLevelName(level.upper())),
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        # No explicit file: structlog then resolves sys.stdout per call, so a swapped stream
+        # (as under pytest) is never written to after it closes.
+        logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
     logging.basicConfig(level=level.upper(), stream=sys.stdout, format="%(message)s")
