@@ -42,11 +42,7 @@ class GoogleVerifier(Protocol):
 
 
 class UnconfiguredGoogleVerifier:
-    """Placeholder until Google token verification is wired in.
-
-    TODO(auth): verify signature, ``aud`` against ``google_client_ids``, ``iss`` and expiry
-    using Google's published keys (for example via ``google-auth``).
-    """
+    """Refuses every token. Used when Google sign-in is disabled, as on F-Droid deployments."""
 
     async def verify(self, id_token: str) -> GoogleIdentity:
         raise InvalidGoogleTokenError("Google sign-in is not configured on this server")
@@ -56,7 +52,3 @@ def build_sms_sender(settings: Settings) -> SmsSender:
     match settings.sms_provider:
         case "console":
             return ConsoleSmsSender()
-
-
-def build_google_verifier(settings: Settings) -> GoogleVerifier:
-    return UnconfiguredGoogleVerifier()

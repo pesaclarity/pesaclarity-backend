@@ -9,7 +9,8 @@ from fastapi import FastAPI, Request, Response
 from ngome import __version__
 from ngome.api.routes import account, health
 from ngome.auth import router as auth_router
-from ngome.auth.providers import build_google_verifier, build_sms_sender
+from ngome.auth.google import build_google_verifier
+from ngome.auth.providers import build_sms_sender
 from ngome.core.config import Settings, get_settings
 from ngome.core.logging import configure_logging, get_logger
 from ngome.db.session import create_engine, create_sessionmaker
