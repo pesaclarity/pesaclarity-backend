@@ -52,6 +52,10 @@ Access tokens last 10 minutes; refresh tokens rotate on every use and expire aft
 
 Google sign-in is off by default. To turn it on, set `NGOME_GOOGLE_SIGN_IN_ENABLED=true` and list the accepted OAuth client ids in `NGOME_GOOGLE_CLIENT_IDS`. ID tokens are checked against Google's published signing keys (cached, and refetched when Google rotates them), plus audience, issuer and expiry. Only the token's subject is kept, as a keyed hash.
 
+### Retention
+
+`ngome-purge` deletes one-time codes 24 hours after they expire and sign-in events after 90 days (`NGOME_RETENTION_*` in `.env.example`; keep them in line with the privacy policy). Run it daily from cron or your scheduler, for example `docker compose run --rm api ngome-purge`. It is safe to run more than once and exits non-zero on failure.
+
 ### Federated learning
 
 `ngome.fl.server:app` is a Flower `ServerApp` running FedAvg under SecAgg+, with updates clipped on the phone and Gaussian noise added on the server. It needs the `fl` extra and runs on a Flower SuperLink, separately from the API. Its settings (`NGOME_FL_*` in `.env.example`) are placeholders until pesaclarity-ml publishes a privacy budget.
@@ -83,7 +87,7 @@ CI also applies the migrations to Postgres, checks they match the models and bui
 
 ## Not done yet
 
-Named `TODO` markers in the code cover: a real SMS provider, Play Integrity checks on uploads, object storage for large backups, purging spent sign-in codes, and loading and publishing the federated model.
+Named `TODO` markers in the code cover: a real SMS provider, Play Integrity checks on uploads, object storage for large backups, and loading and publishing the federated model.
 
 ## Licence
 
