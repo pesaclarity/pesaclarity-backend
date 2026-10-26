@@ -9,7 +9,7 @@ from tests.conftest import OTHER_PHONE, FakeSms, bearer, sign_in
 OCTET = {"Content-Type": "application/octet-stream"}
 
 
-@pytest.fixture(params=["memory", "postgres"])
+@pytest.fixture(params=["memory", "postgres", "filesystem"])
 def blob_store_kind(request: pytest.FixtureRequest) -> str:
     kind: str = request.param
     return kind

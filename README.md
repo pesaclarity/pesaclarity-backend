@@ -48,17 +48,81 @@ To run everything in containers instead: `docker compose up --build`.
 | `POST /v1/vault/backups` | Upload ciphertext (`application/octet-stream`, optional `X-Content-SHA256`) |
 | `GET /v1/vault/backups`, `GET` / `DELETE /v1/vault/backups/{id}` | List, download and delete backups |
 
-Access tokens last 10 minutes; refresh tokens rotate on every use and expire after 30 days. The vault keeps the newest 10 backups per account.
+Access tokens last 10 minutes; refresh tokens rotate on every use and expire after 30 days. The vault keeps the newest 10 backups per account, up to 256 MiB in total.
 
 Google sign-in is off by default. To turn it on, set `NGOME_GOOGLE_SIGN_IN_ENABLED=true` and list the accepted OAuth client ids in `NGOME_GOOGLE_CLIENT_IDS`. ID tokens are checked against Google's published signing keys (cached, and refetched when Google rotates them), plus audience, issuer and expiry. Only the token's subject is kept, as a keyed hash.
 
 ### Retention
 
-`ngome-purge` deletes one-time codes 24 hours after they expire and sign-in events after 90 days (`NGOME_RETENTION_*` in `.env.example`; keep them in line with the privacy policy). Run it daily from cron or your scheduler, for example `docker compose run --rm api ngome-purge`. It is safe to run more than once and exits non-zero on failure.
+`ngome-purge` deletes one-time codes 24 hours after they expire and sign-in events after 90 days, then retries any backup objects still queued for deletion. The periods are `NGOME_RETENTION_OTP_CHALLENGE_HOURS` and `NGOME_RETENTION_AUTH_EVENT_DAYS`; the defaults are provisional until the privacy policy fixes them, and the two must always agree. The job is safe to run more than once or concurrently, and exits non-zero if the purge fails or a queued object could not be deleted (it stays queued for the next run).
+
+Run it once a day with the same environment as the API. Nothing here is deployed for you; pick whichever scheduler you already use.
+
+cron, with Docker Compose:
+
+```cron
+17 3 * * * cd /srv/ngome && docker compose run --rm api ngome-purge
+```
+
+systemd, as `/etc/systemd/system/ngome-purge.service` and `ngome-purge.timer`:
+
+```ini
+[Unit]
+Description=Pesa Clarity retention purge
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/ngome/ngome.env
+ExecStart=/opt/ngome/.venv/bin/ngome-purge
+```
+
+```ini
+[Unit]
+Description=Daily Pesa Clarity retention purge
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Then `systemctl enable --now ngome-purge.timer`.
+
+Kubernetes:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ngome-purge
+spec:
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: purge
+              image: registry.example.com/ngome:0.1.0  # the image you run the API from
+              command: ["ngome-purge"]
+              envFrom:
+                - secretRef:
+                    name: ngome-env  # the same NGOME_* settings as the API
+```
 
 ### Backup storage
 
-Backup bytes go to a blob store chosen by `NGOME_VAULT_BLOB_STORE`: `postgres` (the default, for development and tests) or `s3`, which works with AWS S3, Cloudflare R2 and MinIO. Uploads and downloads stream, with the size cap and checksum checked on the way in. Metadata always stays in Postgres. When a backup goes (deleted, pruned, or with its account), its object is queued for deletion in the same transaction and removed straight after; any object the store fails to delete stays queued, is logged as a count and is retried on the next vault deletion.
+Backup bytes go to a blob store chosen by `NGOME_VAULT_BLOB_STORE`: `postgres` (the default, for development and tests), `filesystem` (files under `NGOME_VAULT_FS_ROOT`, for development or a single-node install) or `s3`, which works with AWS S3, Cloudflare R2 and MinIO. The server only stores and returns ciphertext; it never holds a key that could decrypt it. Uploads and downloads stream, with the size cap, the account quota and the checksum checked on the way in. Metadata always stays in Postgres.
+
+Each backup is capped at `NGOME_VAULT_MAX_BACKUP_BYTES`, and each account at `NGOME_VAULT_MAX_ACCOUNT_BYTES` across the backups it keeps (the new one plus the newest `NGOME_VAULT_KEEP_BACKUPS - 1`, since older ones are pruned). An upload over either limit gets `413`.
+
+When a backup goes (deleted, pruned, or with its account), its object is queued for deletion in the same transaction and removed straight after; any object the store fails to delete stays queued, is logged as a count and is retried on the next vault deletion and by the daily `ngome-purge`.
 
 To try object storage locally, `docker compose up -d minio minio-init` starts MinIO on port 9000 (console on 9001) with `ngome-backups` and `ngome-test` buckets; then set `NGOME_VAULT_BLOB_STORE=s3` and the MinIO credentials from `docker-compose.yml` in `.env`.
 
@@ -72,7 +136,7 @@ To try object storage locally, `docker compose up -d minio minio-init` starts Mi
 src/ngome/
   api/      app factory, shared dependencies, health and account routes
   auth/     phone and Google sign-in, tokens, devices, SMS and Google provider interfaces
-  vault/    encrypted backup metadata, blob stores (Postgres, S3-compatible) and deletion queue
+  vault/    encrypted backup metadata, blob stores (Postgres, filesystem, S3-compatible) and deletion queue
   fl/       Flower aggregation server and its settings
   core/     settings, logging with redaction, token and hashing primitives
   db/       SQLAlchemy base, engine and model registry
@@ -99,7 +163,7 @@ CI also runs those against MinIO, applies the migrations to Postgres, checks the
 
 ## Not done yet
 
-Named `TODO` markers in the code cover: a real SMS provider, Play Integrity checks on uploads, a scheduled sweep of queued blob deletions, and loading and publishing the federated model.
+Named `TODO` markers in the code cover: a real SMS provider, Play Integrity checks on uploads, and loading and publishing the federated model.
 
 ## Licence
 

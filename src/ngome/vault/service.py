@@ -5,7 +5,7 @@ import uuid
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
 
-from sqlalchemy import ColumnElement, delete, select, update
+from sqlalchemy import ColumnElement, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ngome.core.logging import get_logger
@@ -31,12 +31,18 @@ class ChecksumMismatchError(Exception):
     pass
 
 
-class _Meter:
-    """Passes chunks through while counting and hashing them, stopping at ``max_bytes``."""
+class QuotaExceededError(Exception):
+    pass
 
-    def __init__(self, chunks: AsyncIterable[bytes], max_bytes: int) -> None:
+
+class _Meter:
+    """Passes chunks through while counting and hashing them, stopping at ``max_bytes`` or
+    once the account's remaining ``allowance`` is used up."""
+
+    def __init__(self, chunks: AsyncIterable[bytes], max_bytes: int, allowance: int) -> None:
         self._chunks = chunks
         self._max_bytes = max_bytes
+        self._allowance = allowance
         self._hash = hashlib.sha256()
         self.size = 0
 
@@ -47,6 +53,8 @@ class _Meter:
             self.size += len(chunk)
             if self.size > self._max_bytes:
                 raise BackupTooLargeError
+            if self.size > self._allowance:
+                raise QuotaExceededError
             self._hash.update(chunk)
             yield chunk
 
@@ -63,13 +71,19 @@ async def store_backup(
     max_bytes: int,
     expected_sha256: str | None,
     keep: int,
+    quota_bytes: int,
 ) -> Backup:
     """Stream a backup into the blob store, record it, and prune the oldest beyond ``keep``.
 
     The object is written before its metadata, so a backup is never listed without its bytes.
+    ``quota_bytes`` caps what the account holds once pruning is done: the new backup plus the
+    ``keep - 1`` newest existing ones. Two uploads racing from the same account can each pass
+    the check, overshooting by at most one backup until the next upload prunes.
     """
     key = new_object_key()
-    meter = _Meter(chunks, max_bytes)
+    meter = _Meter(
+        chunks, max_bytes, quota_bytes - await _retained_bytes(session, account_id, keep)
+    )
     await store.put(key, meter)
 
     digest = meter.hexdigest()
@@ -110,6 +124,21 @@ async def store_backup(
     if stale_ids:
         await sweep_deletions(session, store)
     return backup
+
+
+async def _retained_bytes(session: AsyncSession, account_id: uuid.UUID, keep: int) -> int:
+    """Bytes held by the backups that survive pruning once one more is stored."""
+    newest = (
+        select(Backup.size_bytes)
+        .where(Backup.account_id == account_id)
+        .order_by(Backup.created_at.desc(), Backup.id.desc())
+        .limit(keep - 1)
+        .subquery()
+    )
+    total = await session.scalar(select(func.coalesce(func.sum(newest.c.size_bytes), 0)))
+    # Release the read transaction so it is not held open while the upload streams.
+    await session.commit()
+    return int(total or 0)
 
 
 async def list_backups(session: AsyncSession, account_id: uuid.UUID) -> list[Backup]:

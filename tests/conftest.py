@@ -11,7 +11,7 @@ from ngome.api.app import create_app
 from ngome.auth.providers import GoogleIdentity, InvalidGoogleTokenError
 from ngome.core.config import Settings
 from ngome.db.models import Base
-from ngome.vault.storage import BlobNotFoundError, BlobStore
+from ngome.vault.storage import BlobNotFoundError, BlobStore, FilesystemBlobStore
 
 # Obviously fake Kenyan numbers.
 PHONE = "0700 000 000"
@@ -101,15 +101,20 @@ def sms() -> FakeSms:
 
 @pytest.fixture
 def blob_store_kind() -> str:
-    """Which blob store the app uses: ``memory`` (the fake) or ``postgres`` (the real one)."""
+    """Which blob store the app uses: ``memory`` (the fake), or the real ``postgres`` or
+    ``filesystem`` store."""
     return "memory"
 
 
 @pytest.fixture
-async def app(settings: Settings, sms: FakeSms, blob_store_kind: str) -> AsyncIterator[FastAPI]:
+async def app(
+    settings: Settings, sms: FakeSms, blob_store_kind: str, tmp_path: Path
+) -> AsyncIterator[FastAPI]:
     application = create_app(settings)
     if blob_store_kind == "memory":
         application.state.blob_store = MemoryBlobStore()
+    elif blob_store_kind == "filesystem":
+        application.state.blob_store = FilesystemBlobStore(tmp_path / "blobs")
     application.state.sms_sender = sms
     application.state.google_verifier = FakeGoogle()
     async with application.state.engine.begin() as conn:

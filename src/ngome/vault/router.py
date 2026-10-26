@@ -71,9 +71,15 @@ async def upload(
             max_bytes=settings.vault_max_backup_bytes,
             expected_sha256=x_content_sha256,
             keep=settings.vault_keep_backups,
+            quota_bytes=settings.vault_max_account_bytes,
         )
     except service.BackupTooLargeError:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Backup is too large") from None
+    except service.QuotaExceededError:
+        raise HTTPException(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            "Backup would take this account over its storage quota",
+        ) from None
     except service.BackupTooSmallError:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, "That does not look like an encrypted backup"
