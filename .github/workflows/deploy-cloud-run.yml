@@ -1,8 +1,9 @@
 name: Deploy to Cloud Run
 
-# Deploys main to Google Cloud Run (EU) once CI passes, or by hand from the
-# Actions tab. Skipped until the GCP_PROJECT_ID variable is set; see README,
-# "Deploying to Cloud Run", for the one-time setup.
+# Deploys main to Google Cloud Run once CI passes, or by hand from the Actions
+# tab. Every name, size and setting comes from repository variables and secrets
+# (see README, "Deploying to Cloud Run"); nothing has a built-in fallback. The
+# job is skipped until GCP_PROJECT_ID is set, and fails if any other is missing.
 on:
   workflow_run:
     workflows: [CI]
@@ -20,12 +21,16 @@ concurrency:
 
 env:
   PROJECT: ${{ vars.GCP_PROJECT_ID }}
-  REGION: ${{ vars.GCP_REGION || 'europe-west1' }}
-  SERVICE: ngome-api
-  RUNTIME_SA: ngome-runtime@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
-  # Values from Secret Manager, as ENV=secret-name:version.
-  SECRETS: >-
-    NGOME_DATABASE_URL=ngome-database-url:latest,NGOME_JWT_SECRET=ngome-jwt-secret:latest,NGOME_CONTACT_PEPPER=ngome-contact-pepper:latest,NGOME_SMTP_PASSWORD=ngome-smtp-password:latest,NGOME_VAULT_S3_ACCESS_KEY_ID=ngome-s3-access-key-id:latest,NGOME_VAULT_S3_SECRET_ACCESS_KEY=ngome-s3-secret-access-key:latest
+  REGION: ${{ vars.GCP_REGION }}
+  IMAGE_REPO: ${{ vars.GCP_IMAGE }}
+  RUNTIME_SA: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+  SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+  MIGRATE_JOB: ${{ vars.CLOUD_RUN_MIGRATE_JOB }}
+  PURGE_JOB: ${{ vars.CLOUD_RUN_PURGE_JOB }}
+  SERVICE_FLAGS: ${{ vars.CLOUD_RUN_SERVICE_FLAGS }}
+  JOB_FLAGS: ${{ vars.CLOUD_RUN_JOB_FLAGS }}
+  SECRETS: ${{ vars.CLOUD_RUN_SECRETS }}
+  ENV_YAML: ${{ vars.CLOUD_RUN_ENV_YAML }}
 
 jobs:
   deploy:
@@ -37,6 +42,21 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - name: Check configuration
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          DEPLOY_SA: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+        run: |
+          missing=""
+          for name in PROJECT REGION IMAGE_REPO RUNTIME_SA SERVICE MIGRATE_JOB PURGE_JOB \
+            SERVICE_FLAGS JOB_FLAGS SECRETS ENV_YAML WIF_PROVIDER DEPLOY_SA; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository variables for:$missing (see README)"
+            exit 1
+          fi
+
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
@@ -44,79 +64,54 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ngome-deploy@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
 
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Build and push the image
         id: image
         run: |
-          image="$REGION-docker.pkg.dev/$PROJECT/ngome/ngome:${GITHUB_SHA::12}"
-          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          image="$IMAGE_REPO:${GITHUB_SHA::12}"
+          gcloud auth configure-docker "${IMAGE_REPO%%/*}" --quiet
           docker build --provenance=false -t "$image" .
           docker push "$image"
           echo "ref=$image" >> "$GITHUB_OUTPUT"
 
       - name: Write the service settings
-        env:
-          EMAIL_FROM: ${{ vars.NGOME_EMAIL_FROM }}
-          SMTP_HOST: ${{ vars.NGOME_SMTP_HOST || 'smtp-relay.brevo.com' }}
-          SMTP_USERNAME: ${{ vars.NGOME_SMTP_USERNAME }}
-          S3_BUCKET: ${{ vars.NGOME_VAULT_S3_BUCKET }}
-          S3_ENDPOINT_URL: ${{ vars.NGOME_VAULT_S3_ENDPOINT_URL }}
-          GOOGLE_CLIENT_IDS: ${{ vars.NGOME_GOOGLE_CLIENT_IDS || '[]' }}
-        run: |
-          google_enabled=false
-          [ "$GOOGLE_CLIENT_IDS" != "[]" ] && google_enabled=true
-          # YAML strings, so values with spaces, quotes or brackets pass through intact.
-          q() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
-          {
-            echo "NGOME_ENVIRONMENT: production"
-            echo "NGOME_LOG_JSON: \"true\""
-            echo "NGOME_EMAIL_PROVIDER: smtp"
-            echo "NGOME_EMAIL_FROM: $(q "$EMAIL_FROM")"
-            echo "NGOME_SMTP_HOST: $(q "$SMTP_HOST")"
-            echo "NGOME_SMTP_USERNAME: $(q "$SMTP_USERNAME")"
-            echo "NGOME_VAULT_BLOB_STORE: s3"
-            echo "NGOME_VAULT_S3_BUCKET: $(q "$S3_BUCKET")"
-            echo "NGOME_VAULT_S3_ENDPOINT_URL: $(q "$S3_ENDPOINT_URL")"
-            echo "NGOME_VAULT_S3_REGION: auto"
-            echo "NGOME_GOOGLE_SIGN_IN_ENABLED: \"$google_enabled\""
-            echo "NGOME_GOOGLE_CLIENT_IDS: $(q "$GOOGLE_CLIENT_IDS")"
-            # Cloud Run's front end is the only thing that can reach the container.
-            echo "FORWARDED_ALLOW_IPS: \"*\""
-          } > "$RUNNER_TEMP/env.yaml"
+        run: printf '%s\n' "$ENV_YAML" > "$RUNNER_TEMP/env.yaml"
 
       # Migrations run as a Cloud Run job first; the new revision goes live only if they pass.
       - name: Migrate the database
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
         run: |
-          gcloud run jobs deploy ngome-migrate --project "$PROJECT" --region "$REGION" \
+          # shellcheck disable=SC2086 # the flags variable holds several flags
+          gcloud run jobs deploy "$MIGRATE_JOB" --project "$PROJECT" --region "$REGION" \
             --image "$IMAGE" --command alembic --args upgrade,head \
             --service-account "$RUNTIME_SA" --env-vars-file "$RUNNER_TEMP/env.yaml" \
-            --set-secrets "$SECRETS" --max-retries 0 --task-timeout 5m --quiet
-          gcloud run jobs execute ngome-migrate --project "$PROJECT" --region "$REGION" --wait
+            --set-secrets "$SECRETS" $JOB_FLAGS --quiet
+          gcloud run jobs execute "$MIGRATE_JOB" --project "$PROJECT" --region "$REGION" --wait
 
       - name: Release the API
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
         run: |
+          # shellcheck disable=SC2086
           gcloud run deploy "$SERVICE" --project "$PROJECT" --region "$REGION" \
-            --image "$IMAGE" --port 8000 --allow-unauthenticated \
-            --service-account "$RUNTIME_SA" --env-vars-file "$RUNNER_TEMP/env.yaml" \
-            --set-secrets "$SECRETS" --cpu 1 --memory 512Mi \
-            --min-instances 0 --max-instances 3 --concurrency 40 --quiet
+            --image "$IMAGE" --service-account "$RUNTIME_SA" \
+            --env-vars-file "$RUNNER_TEMP/env.yaml" --set-secrets "$SECRETS" \
+            $SERVICE_FLAGS --quiet
 
       # The daily retention purge runs the same image; Cloud Scheduler triggers it.
       - name: Update the purge job
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
         run: |
-          gcloud run jobs deploy ngome-purge --project "$PROJECT" --region "$REGION" \
+          # shellcheck disable=SC2086
+          gcloud run jobs deploy "$PURGE_JOB" --project "$PROJECT" --region "$REGION" \
             --image "$IMAGE" --command ngome-purge \
             --service-account "$RUNTIME_SA" --env-vars-file "$RUNNER_TEMP/env.yaml" \
-            --set-secrets "$SECRETS" --max-retries 1 --task-timeout 10m --quiet
+            --set-secrets "$SECRETS" $JOB_FLAGS --quiet
 
       - name: Check health
         run: |

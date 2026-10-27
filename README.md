@@ -132,29 +132,38 @@ To try object storage locally, `docker compose up -d minio minio-init` starts Mi
 
 ## Deploying to Cloud Run
 
-Production runs in the EU: the API on Google Cloud Run in `europe-west1` (Belgium), Postgres on [Neon](https://neon.tech) (Frankfurt), backup ciphertext on Cloudflare R2 with EU jurisdiction, and sign-in emails through [Brevo](https://www.brevo.com) over SMTP. At proof-of-concept traffic all four fit their free tiers; Cloud Run scales to zero, so the first request after a quiet spell takes a second or two.
+The intended production setup runs in the EU: the API on Google Cloud Run, Postgres on [Neon](https://neon.tech), backup ciphertext on Cloudflare R2 with EU jurisdiction, and sign-in emails through [Brevo](https://www.brevo.com) over SMTP. At proof-of-concept traffic all four fit their free tiers; Cloud Run scales to zero, so the first request after a quiet spell takes a second or two.
 
-`.github/workflows/deploy-cloud-run.yml` deploys `main` each time CI passes. It signs in to Google Cloud without a stored key, builds the image, runs the migrations as a Cloud Run job, releases the API only if they pass, refreshes the `ngome-purge` job and checks `/health/ready`. Until the `GCP_PROJECT_ID` variable exists the job is skipped.
+`.github/workflows/deploy-cloud-run.yml` deploys `main` each time CI passes. It signs in to Google Cloud without a stored key, builds the image, runs the migrations as a Cloud Run job, releases the API only if they pass, refreshes the purge job and checks `/health/ready`.
+
+Nothing about the deployment lives in the code: every name, region, size, provider setting and the sign-in email wording come from repository variables and Secret Manager. The job is skipped until `GCP_PROJECT_ID` exists and stops with a list of whatever else is missing.
 
 ### One-time setup
 
-1. **Neon:** create a project in AWS Europe Central (Frankfurt) and copy the direct (not pooled) connection string. The server converts its `sslmode` options for asyncpg.
+Pick your own names first; the commands below use these shell variables.
+
+```sh
+PROJECT=<project-id> REGION=<region, e.g. europe-west1> REPO=<owner>/pesaclarity-backend
+AR_REPO=<artifact registry repository> RUNTIME_NAME=<runtime account> DEPLOY_NAME=<deploy account>
+POOL_ID=<workload identity pool> PROVIDER_ID=<pool provider>
+```
+
+1. **Neon:** create a project in an EU region and copy the direct (not pooled) connection string. The server converts its `sslmode` options for asyncpg.
 2. **Cloudflare R2:** create a bucket with the EU jurisdiction and an API token with read and write access to it. The endpoint is `https://<account-id>.eu.r2.cloudflarestorage.com`.
-3. **Brevo:** verify a sender address or domain, then copy the SMTP login and an SMTP key from SMTP & API settings.
+3. **Brevo:** verify a sender address or domain, then copy the SMTP host, port, login and an SMTP key from SMTP & API settings.
 4. **Google Cloud** (a project with billing and a budget alert):
 
    ```sh
-   PROJECT=<project-id> REGION=europe-west1 REPO=pesaclarity/pesaclarity-backend
    gcloud config set project "$PROJECT"
    gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
      secretmanager.googleapis.com cloudscheduler.googleapis.com iamcredentials.googleapis.com
-   gcloud artifacts repositories create ngome --repository-format docker --location "$REGION"
+   gcloud artifacts repositories create "$AR_REPO" --repository-format docker --location "$REGION"
 
    # Who the API runs as, and who GitHub deploys as.
-   gcloud iam service-accounts create ngome-runtime
-   gcloud iam service-accounts create ngome-deploy
-   RUNTIME=ngome-runtime@$PROJECT.iam.gserviceaccount.com
-   DEPLOY=ngome-deploy@$PROJECT.iam.gserviceaccount.com
+   gcloud iam service-accounts create "$RUNTIME_NAME"
+   gcloud iam service-accounts create "$DEPLOY_NAME"
+   RUNTIME=$RUNTIME_NAME@$PROJECT.iam.gserviceaccount.com
+   DEPLOY=$DEPLOY_NAME@$PROJECT.iam.gserviceaccount.com
    gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$RUNTIME" --role roles/secretmanager.secretAccessor
    for role in roles/run.admin roles/artifactregistry.writer; do
      gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$DEPLOY" --role "$role"
@@ -162,36 +171,75 @@ Production runs in the EU: the API on Google Cloud Run in `europe-west1` (Belgiu
    gcloud iam service-accounts add-iam-policy-binding "$RUNTIME" --member "serviceAccount:$DEPLOY" --role roles/iam.serviceAccountUser
 
    # Keyless sign-in for this repository's workflows only.
-   gcloud iam workload-identity-pools create github --location global
-   gcloud iam workload-identity-pools providers create-oidc github --location global \
-     --workload-identity-pool github --issuer-uri https://token.actions.githubusercontent.com \
+   gcloud iam workload-identity-pools create "$POOL_ID" --location global
+   gcloud iam workload-identity-pools providers create-oidc "$PROVIDER_ID" --location global \
+     --workload-identity-pool "$POOL_ID" --issuer-uri https://token.actions.githubusercontent.com \
      --attribute-mapping google.subject=assertion.sub,attribute.repository=assertion.repository \
      --attribute-condition "assertion.repository == '$REPO'"
-   POOL=$(gcloud iam workload-identity-pools describe github --location global --format 'value(name)')
+   POOL=$(gcloud iam workload-identity-pools describe "$POOL_ID" --location global --format 'value(name)')
    gcloud iam service-accounts add-iam-policy-binding "$DEPLOY" --role roles/iam.workloadIdentityUser \
      --member "principalSet://iam.googleapis.com/$POOL/attribute.repository/$REPO"
-   gcloud iam workload-identity-pools providers describe github --location global \
-     --workload-identity-pool github --format 'value(name)'   # -> GCP_WORKLOAD_IDENTITY_PROVIDER
+   gcloud iam workload-identity-pools providers describe "$PROVIDER_ID" --location global \
+     --workload-identity-pool "$POOL_ID" --format 'value(name)'   # -> GCP_WORKLOAD_IDENTITY_PROVIDER
 
-   # Secrets. NGOME_CONTACT_PEPPER must never change once accounts exist: keep a copy offline.
+   # One secret per sensitive setting, named as you like.
+   # NGOME_CONTACT_PEPPER must never change once accounts exist: keep a copy offline.
    new() { printf '%s' "$2" | gcloud secrets create "$1" --data-file -; }
-   new ngome-database-url '<neon connection string>'
-   new ngome-jwt-secret "$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
-   new ngome-contact-pepper "$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
-   new ngome-smtp-password '<brevo smtp key>'
-   new ngome-s3-access-key-id '<r2 access key id>'
-   new ngome-s3-secret-access-key '<r2 secret access key>'
+   new <database-url-secret> '<neon connection string>'
+   new <jwt-secret> "$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+   new <contact-pepper-secret> "$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+   new <smtp-password-secret> '<brevo smtp key>'
+   new <s3-access-key-id-secret> '<r2 access key id>'
+   new <s3-secret-access-key-secret> '<r2 secret access key>'
    ```
 
-5. **GitHub:** add repository variables `GCP_PROJECT_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `NGOME_EMAIL_FROM` (such as `Pesa Clarity <codes@example.org>`), `NGOME_SMTP_USERNAME` (the Brevo SMTP login), `NGOME_VAULT_S3_BUCKET` and `NGOME_VAULT_S3_ENDPOINT_URL`. Optional: `GCP_REGION`, `NGOME_SMTP_HOST` (defaults to Brevo) and `NGOME_GOOGLE_CLIENT_IDS` (a JSON list; Google sign-in turns on when it is set). Then run the workflow from the Actions tab.
-6. **Daily purge**, once the first deploy has created the job:
+5. **GitHub repository variables** (Settings → Secrets and variables → Actions → Variables):
+
+   | Variable | What it holds |
+   | --- | --- |
+   | `GCP_PROJECT_ID`, `GCP_REGION` | The project and region |
+   | `GCP_WORKLOAD_IDENTITY_PROVIDER` | The provider name printed above |
+   | `GCP_DEPLOY_SERVICE_ACCOUNT`, `GCP_RUNTIME_SERVICE_ACCOUNT` | The two service account emails |
+   | `GCP_IMAGE` | Image path without a tag: `<region>-docker.pkg.dev/<project>/<ar-repo>/<image>` |
+   | `CLOUD_RUN_SERVICE`, `CLOUD_RUN_MIGRATE_JOB`, `CLOUD_RUN_PURGE_JOB` | Names for the API service and the two jobs |
+   | `CLOUD_RUN_SERVICE_FLAGS` | Extra `gcloud run deploy` flags, for example `--port 8000 --allow-unauthenticated --cpu 1 --memory 512Mi --min-instances 0 --max-instances 3 --concurrency 40` |
+   | `CLOUD_RUN_JOB_FLAGS` | Extra `gcloud run jobs deploy` flags, for example `--max-retries 0 --task-timeout 10m` |
+   | `CLOUD_RUN_SECRETS` | `ENV=secret:version` pairs, comma-separated: `NGOME_DATABASE_URL`, `NGOME_JWT_SECRET`, `NGOME_CONTACT_PEPPER`, `NGOME_SMTP_PASSWORD`, `NGOME_VAULT_S3_ACCESS_KEY_ID`, `NGOME_VAULT_S3_SECRET_ACCESS_KEY` |
+   | `CLOUD_RUN_ENV_YAML` | Every other setting, as YAML (below) |
+
+   `CLOUD_RUN_ENV_YAML` holds the non-secret settings from `.env.example`. A variable can span several lines, so the email wording can too:
+
+   ```yaml
+   NGOME_ENVIRONMENT: production
+   NGOME_LOG_JSON: "true"
+   NGOME_EMAIL_PROVIDER: smtp
+   NGOME_EMAIL_FROM: "<Name> <sender@your-domain>"
+   NGOME_EMAIL_CODE_SUBJECT: "<subject with {code}>"
+   NGOME_EMAIL_CODE_BODY: |
+     <body with {code} and {minutes}>
+   NGOME_SMTP_HOST: "<smtp host>"
+   NGOME_SMTP_PORT: "<smtp port>"
+   NGOME_SMTP_USERNAME: "<smtp login>"
+   NGOME_SMTP_TIMEOUT_SECONDS: "<seconds>"
+   NGOME_VAULT_BLOB_STORE: s3
+   NGOME_VAULT_S3_BUCKET: "<bucket>"
+   NGOME_VAULT_S3_ENDPOINT_URL: "<endpoint>"
+   NGOME_VAULT_S3_REGION: "<region, auto for R2>"
+   NGOME_GOOGLE_SIGN_IN_ENABLED: "<true or false>"
+   NGOME_GOOGLE_CLIENT_IDS: '["<web client id>"]'
+   FORWARDED_ALLOW_IPS: "*"
+   ```
+
+   Then run the workflow from the Actions tab.
+6. **Daily purge**, once the first deploy has created the purge job:
 
    ```sh
-   gcloud iam service-accounts create ngome-scheduler
-   SCHEDULER=ngome-scheduler@$PROJECT.iam.gserviceaccount.com
-   gcloud run jobs add-iam-policy-binding ngome-purge --region "$REGION" --member "serviceAccount:$SCHEDULER" --role roles/run.invoker
-   gcloud scheduler jobs create http ngome-purge-daily --location "$REGION" --schedule "15 2 * * *" \
-     --uri "https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/ngome-purge:run" \
+   PURGE_JOB=<CLOUD_RUN_PURGE_JOB> SCHEDULER_NAME=<scheduler account> SCHEDULE='<cron, e.g. 15 2 * * *>'
+   gcloud iam service-accounts create "$SCHEDULER_NAME"
+   SCHEDULER=$SCHEDULER_NAME@$PROJECT.iam.gserviceaccount.com
+   gcloud run jobs add-iam-policy-binding "$PURGE_JOB" --region "$REGION" --member "serviceAccount:$SCHEDULER" --role roles/run.invoker
+   gcloud scheduler jobs create http "$PURGE_JOB-daily" --location "$REGION" --schedule "$SCHEDULE" \
+     --uri "https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/$PURGE_JOB:run" \
      --http-method POST --oauth-service-account-email "$SCHEDULER"
    ```
 
