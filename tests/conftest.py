@@ -13,17 +13,17 @@ from ngome.core.config import Settings
 from ngome.db.models import Base
 from ngome.vault.storage import BlobNotFoundError, BlobStore, FilesystemBlobStore
 
-# Obviously fake Kenyan numbers.
-PHONE = "0700 000 000"
-OTHER_PHONE = "0711 000 001"
+# Reserved example domain: never a real mailbox.
+EMAIL = "Wanjiku@Example.com "
+OTHER_EMAIL = "otieno@example.com"
 
 
 @dataclass
-class FakeSms:
+class FakeMail:
     sent: list[tuple[str, str]] = field(default_factory=list)
 
-    async def send(self, phone_e164: str, text: str) -> None:
-        self.sent.append((phone_e164, text))
+    async def send(self, to: str, subject: str, text: str) -> None:
+        self.sent.append((to, text))
 
     def last_code(self) -> str:
         return next(
@@ -95,8 +95,8 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-def sms() -> FakeSms:
-    return FakeSms()
+def mail() -> FakeMail:
+    return FakeMail()
 
 
 @pytest.fixture
@@ -108,14 +108,14 @@ def blob_store_kind() -> str:
 
 @pytest.fixture
 async def app(
-    settings: Settings, sms: FakeSms, blob_store_kind: str, tmp_path: Path
+    settings: Settings, mail: FakeMail, blob_store_kind: str, tmp_path: Path
 ) -> AsyncIterator[FastAPI]:
     application = create_app(settings)
     if blob_store_kind == "memory":
         application.state.blob_store = MemoryBlobStore()
     elif blob_store_kind == "filesystem":
         application.state.blob_store = FilesystemBlobStore(tmp_path / "blobs")
-    application.state.sms_sender = sms
+    application.state.email_sender = mail
     application.state.google_verifier = FakeGoogle()
     async with application.state.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -137,15 +137,15 @@ async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
 
 
 async def sign_in(
-    client: httpx.AsyncClient, sms: FakeSms, phone: str = PHONE, device: str = "Test phone"
+    client: httpx.AsyncClient, mail: FakeMail, email: str = EMAIL, device: str = "Test phone"
 ) -> dict[str, str]:
-    start = await client.post("/v1/auth/phone/start", json={"phone": phone})
+    start = await client.post("/v1/auth/email/start", json={"email": email})
     assert start.status_code == 202, start.text
     verify = await client.post(
-        "/v1/auth/phone/verify",
+        "/v1/auth/email/verify",
         json={
             "challenge_id": start.json()["challenge_id"],
-            "code": sms.last_code(),
+            "code": mail.last_code(),
             "device_name": device,
         },
     )

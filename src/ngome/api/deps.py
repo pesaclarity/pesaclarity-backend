@@ -10,7 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ngome.auth.models import Device
-from ngome.auth.providers import GoogleVerifier, SmsSender
+from ngome.auth.providers import EmailSender, GoogleVerifier
 from ngome.core.config import Settings
 from ngome.core.security import InvalidTokenError, decode_access_token
 from ngome.vault.storage import BlobStore
@@ -28,8 +28,8 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
-def get_sms_sender(request: Request) -> SmsSender:
-    return cast(SmsSender, request.app.state.sms_sender)
+def get_email_sender(request: Request) -> EmailSender:
+    return cast(EmailSender, request.app.state.email_sender)
 
 
 def get_google_verifier(request: Request) -> GoogleVerifier:

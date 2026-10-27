@@ -1,4 +1,4 @@
-"""Auth endpoints: phone and Google sign-in, token refresh, sign-out and devices."""
+"""Auth endpoints: email and Google sign-in, token refresh, sign-out and devices."""
 
 import uuid
 from typing import Annotated
@@ -9,18 +9,18 @@ from ngome.api.deps import (
     PrincipalDep,
     SessionDep,
     SettingsDep,
+    get_email_sender,
     get_google_verifier,
-    get_sms_sender,
 )
 from ngome.auth import service
 from ngome.auth.models import AuthEventKind
-from ngome.auth.providers import GoogleVerifier, InvalidGoogleTokenError, SmsSender
+from ngome.auth.providers import EmailSender, GoogleVerifier, InvalidGoogleTokenError
 from ngome.auth.schemas import (
     DeviceOut,
+    EmailStartRequest,
+    EmailStartResponse,
+    EmailVerifyRequest,
     GoogleSignInRequest,
-    PhoneStartRequest,
-    PhoneStartResponse,
-    PhoneVerifyRequest,
     RefreshRequest,
     TokenPair,
 )
@@ -38,32 +38,32 @@ def _token_pair(tokens: service.IssuedTokens) -> TokenPair:
     )
 
 
-@router.post("/phone/start", status_code=status.HTTP_202_ACCEPTED)
-async def phone_start(
-    body: PhoneStartRequest,
+@router.post("/email/start", status_code=status.HTTP_202_ACCEPTED)
+async def email_start(
+    body: EmailStartRequest,
     session: SessionDep,
     settings: SettingsDep,
-    sms: Annotated[SmsSender, Depends(get_sms_sender)],
-) -> PhoneStartResponse:
+    mail: Annotated[EmailSender, Depends(get_email_sender)],
+) -> EmailStartResponse:
     try:
-        challenge = await service.start_phone_sign_in(session, settings, sms, body.phone)
-    except service.InvalidPhoneError:
+        challenge = await service.start_email_sign_in(session, settings, mail, body.email)
+    except service.InvalidEmailError:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "That phone number is not valid"
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "That email address is not valid"
         ) from None
     except service.RateLimitedError:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS, "Too many codes requested. Try again later."
         ) from None
-    return PhoneStartResponse(challenge_id=challenge.id, expires_in=settings.otp_ttl_seconds)
+    return EmailStartResponse(challenge_id=challenge.id, expires_in=settings.otp_ttl_seconds)
 
 
-@router.post("/phone/verify")
-async def phone_verify(
-    body: PhoneVerifyRequest, session: SessionDep, settings: SettingsDep
+@router.post("/email/verify")
+async def email_verify(
+    body: EmailVerifyRequest, session: SessionDep, settings: SettingsDep
 ) -> TokenPair:
     try:
-        tokens = await service.verify_phone_sign_in(
+        tokens = await service.verify_email_sign_in(
             session, settings, body.challenge_id, body.code, body.device_name
         )
     except service.InvalidCodeError:

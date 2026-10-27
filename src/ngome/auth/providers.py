@@ -1,6 +1,10 @@
 """Outbound identity providers, kept behind small interfaces so they can be swapped or faked."""
 
+import asyncio
+import smtplib
+import ssl
 from dataclasses import dataclass
+from email.message import EmailMessage
 from typing import Protocol
 
 from ngome.core.config import Settings
@@ -9,21 +13,50 @@ from ngome.core.logging import get_logger
 log = get_logger(__name__)
 
 
-class SmsSender(Protocol):
-    async def send(self, phone_e164: str, text: str) -> None:
-        """Deliver ``text`` to ``phone_e164`` or raise."""
+class EmailSender(Protocol):
+    async def send(self, to: str, subject: str, text: str) -> None:
+        """Deliver a plain-text email to ``to`` or raise."""
         ...
 
 
-class ConsoleSmsSender:
+class ConsoleEmailSender:
     """Development-only sender that prints the message instead of sending it.
 
     Settings validation refuses this provider in production.
     """
 
-    async def send(self, phone_e164: str, text: str) -> None:
+    async def send(self, to: str, subject: str, text: str) -> None:
         # Printed, not logged, so the code never reaches log storage.
-        print(f"[dev sms to ...{phone_e164[-3:]}] {text}", flush=True)  # noqa: T201
+        print(f"[dev email to {to[:1]}...] {subject}\n{text}", flush=True)  # noqa: T201
+
+
+class SmtpEmailSender:
+    """Sends through any SMTP relay (Brevo, Resend, Amazon SES...) over STARTTLS."""
+
+    def __init__(self, settings: Settings) -> None:
+        if settings.smtp_host is None or settings.email_from is None:
+            raise ValueError("smtp_host and email_from are required for the smtp provider")
+        self._host = settings.smtp_host
+        self._port = settings.smtp_port
+        self._username = settings.smtp_username
+        self._password = settings.smtp_password
+        self._sender = settings.email_from
+        self._timeout = settings.smtp_timeout_seconds
+
+    async def send(self, to: str, subject: str, text: str) -> None:
+        message = EmailMessage()
+        message["From"] = self._sender
+        message["To"] = to
+        message["Subject"] = subject
+        message.set_content(text)
+        await asyncio.to_thread(self._deliver, message)
+
+    def _deliver(self, message: EmailMessage) -> None:
+        with smtplib.SMTP(self._host, self._port, timeout=self._timeout) as smtp:
+            smtp.starttls(context=ssl.create_default_context())
+            if self._username is not None and self._password is not None:
+                smtp.login(self._username, self._password.get_secret_value())
+            smtp.send_message(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +81,9 @@ class UnconfiguredGoogleVerifier:
         raise InvalidGoogleTokenError("Google sign-in is not configured on this server")
 
 
-def build_sms_sender(settings: Settings) -> SmsSender:
-    match settings.sms_provider:
+def build_email_sender(settings: Settings) -> EmailSender:
+    match settings.email_provider:
         case "console":
-            return ConsoleSmsSender()
+            return ConsoleEmailSender()
+        case "smtp":
+            return SmtpEmailSender(settings)

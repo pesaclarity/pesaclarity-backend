@@ -12,7 +12,7 @@ from ngome.db.base import Base, UTCDateTime
 
 
 class ContactKind(enum.StrEnum):
-    PHONE = "phone"
+    EMAIL = "email"
     GOOGLE = "google"
 
 

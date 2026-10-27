@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from ngome.core.config import Settings
-from tests.conftest import OTHER_PHONE, FakeSms, bearer, make_settings, sign_in
+from tests.conftest import OTHER_EMAIL, FakeMail, bearer, make_settings, sign_in
 from tests.test_vault import OCTET, ciphertext
 
 
@@ -17,9 +17,9 @@ def settings(tmp_path: Path) -> Settings:
 
 
 async def test_account_quota_counts_backups_that_survive_pruning(
-    client: httpx.AsyncClient, sms: FakeSms
+    client: httpx.AsyncClient, mail: FakeMail
 ) -> None:
-    auth = bearer(await sign_in(client, sms))
+    auth = bearer(await sign_in(client, mail))
     for _ in range(2):
         ok = await client.post(
             "/v1/vault/backups", content=ciphertext(800), headers={**auth, **OCTET}
@@ -34,7 +34,7 @@ async def test_account_quota_counts_backups_that_survive_pruning(
     assert len((await client.get("/v1/vault/backups", headers=auth)).json()) == 2
 
     # The quota is per account.
-    other = bearer(await sign_in(client, sms, OTHER_PHONE))
+    other = bearer(await sign_in(client, mail, OTHER_EMAIL))
     elsewhere = await client.post(
         "/v1/vault/backups", content=ciphertext(800), headers={**other, **OCTET}
     )
@@ -42,9 +42,9 @@ async def test_account_quota_counts_backups_that_survive_pruning(
 
 
 async def test_quota_frees_up_when_backups_are_deleted(
-    client: httpx.AsyncClient, sms: FakeSms
+    client: httpx.AsyncClient, mail: FakeMail
 ) -> None:
-    auth = bearer(await sign_in(client, sms))
+    auth = bearer(await sign_in(client, mail))
     first = await client.post(
         "/v1/vault/backups", content=ciphertext(1200), headers={**auth, **OCTET}
     )
