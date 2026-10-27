@@ -1,6 +1,6 @@
 # pesaclarity-backend
 
-The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free Android app that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has three narrow jobs: sign people in (phone number with an SMS code, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, and combine clipped, noised federated model updates under secure aggregation.
+The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free Android app that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has three narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, and combine clipped, noised federated model updates under secure aggregation.
 
 **Codename:** ngome, Swahili for "fortress".
 
@@ -12,7 +12,7 @@ The product spec and brand live in [pesaclarity/docs](https://github.com/pesacla
 
 | Service | Stores | Never stores |
 | --- | --- | --- |
-| Auth | Account id, a keyed hash of the sign-in contact, devices, sign-up, sign-in and sign-out events | The phone number or Google id in readable form, any financial data |
+| Auth | Account id, a keyed hash of the sign-in contact, devices, sign-up, sign-in and sign-out events | The email address or Google id in readable form, any financial data |
 | Backup vault | Ciphertext (AES-256-GCM, keyed on the phone with Argon2id) in object storage under a random key; its size, SHA-256 and upload time in Postgres | Keys, passphrases or anything readable; account ids in object keys |
 | Federated learning | Aggregated model updates | Raw data or individual updates in the clear |
 
@@ -30,7 +30,7 @@ uv run alembic upgrade head
 uv run uvicorn ngome.api.app:create_app --factory --reload
 ```
 
-The API is then on http://localhost:8000, with interactive docs at `/docs` outside production. In development, sign-in codes are printed to the server's console instead of sent by SMS.
+The API is then on http://localhost:8000, with interactive docs at `/docs` outside production. In development, sign-in codes are printed to the server's console instead of emailed.
 
 To run everything in containers instead: `docker compose up --build`.
 
@@ -39,7 +39,7 @@ To run everything in containers instead: `docker compose up --build`.
 | Method and path | Purpose |
 | --- | --- |
 | `GET /health`, `GET /health/ready` | Liveness and database readiness |
-| `POST /v1/auth/phone/start`, `POST /v1/auth/phone/verify` | Phone sign-in with a one-time code |
+| `POST /v1/auth/email/start`, `POST /v1/auth/email/verify` | Email sign-in with a one-time code |
 | `POST /v1/auth/google` | Google sign-in (Play Store build; off unless enabled with client ids) |
 | `POST /v1/auth/refresh` | Rotate tokens; reusing an old refresh token signs that device out |
 | `POST /v1/auth/sign-out` | Sign this device out |
@@ -202,7 +202,7 @@ The Flower aggregation server is not deployed yet; when it is, it can run as a s
 ```
 src/ngome/
   api/      app factory, shared dependencies, health and account routes
-  auth/     phone and Google sign-in, tokens, devices, SMS and Google provider interfaces
+  auth/     email and Google sign-in, tokens, devices, email (SMTP) and Google providers
   vault/    encrypted backup metadata, blob stores (Postgres, filesystem, S3-compatible) and deletion queue
   fl/       Flower aggregation server and its settings
   core/     settings, logging with redaction, token and hashing primitives
@@ -230,7 +230,7 @@ CI also runs those against MinIO, applies the migrations to Postgres, checks the
 
 ## Not done yet
 
-Named `TODO` markers in the code cover: a real SMS provider, Play Integrity checks on uploads, and loading and publishing the federated model.
+Named `TODO` markers in the code cover: Play Integrity checks on uploads, and loading and publishing the federated model.
 
 ## Licence
 

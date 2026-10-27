@@ -13,7 +13,7 @@ from ngome.core.security import (
     decode_access_token,
     utcnow,
 )
-from tests.conftest import FakeSms, bearer, make_settings, sign_in
+from tests.conftest import FakeMail, bearer, make_settings, sign_in
 
 
 async def test_health(client: httpx.AsyncClient) -> None:
@@ -52,9 +52,14 @@ def test_settings_reject_weak_secrets(tmp_path: Path) -> None:
         make_settings(tmp_path, jwt_secret=SecretStr("short"))
 
 
-def test_settings_refuse_console_sms_in_production(tmp_path: Path) -> None:
-    with pytest.raises(ValidationError, match="console SMS provider"):
+def test_settings_refuse_console_email_in_production(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="console email provider"):
         make_settings(tmp_path, environment="production")
+
+
+def test_settings_need_a_host_and_sender_for_smtp(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="smtp_host and email_from"):
+        make_settings(tmp_path, email_provider="smtp", smtp_host="smtp.example.com")
 
 
 @pytest.mark.parametrize(
@@ -73,9 +78,9 @@ def test_settings_convert_libpq_database_urls(tmp_path: Path, url: str, expected
 
 
 async def test_logs_carry_no_contact_code_or_payload(
-    capfd: pytest.CaptureFixture[str], client: httpx.AsyncClient, sms: FakeSms
+    capfd: pytest.CaptureFixture[str], client: httpx.AsyncClient, mail: FakeMail
 ) -> None:
-    tokens = await sign_in(client, sms)
+    tokens = await sign_in(client, mail)
     payload = b"synthetic-ciphertext-marker-" + b"\x00" * 32
     await client.post(
         "/v1/vault/backups",
@@ -86,8 +91,8 @@ async def test_logs_carry_no_contact_code_or_payload(
     assert "vault.stored" in output
     assert "/v1/vault/backups" in output
     for secret in (
-        "700000000",
-        sms.last_code(),
+        "wanjiku",
+        mail.last_code(),
         "synthetic-ciphertext-marker",
         tokens["refresh_token"],
     ):
