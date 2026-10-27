@@ -35,6 +35,7 @@ All four must pass; CI runs the same checks, plus the object storage tests on Mi
 
 ## Commits and pull requests
 
-- Small, focused pull requests with a short description of what changed and why.
+- Small, focused pull requests against `dev`, with a short description of what changed and why. `main` takes only `dev` and release pull requests (see [Branches and releases](README.md#branches-and-releases)).
+- Pull request titles follow [Conventional Commits](https://www.conventionalcommits.org): `feat: add rate limit to code requests`, `fix: …`, `feat!: …` for a breaking change. They set the next version and the changelog.
 - Commit messages: one short line in the imperative, e.g. "Add rate limit to code requests".
 - New dependencies need a reason in the pull request.
