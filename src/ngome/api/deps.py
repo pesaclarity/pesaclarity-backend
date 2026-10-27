@@ -13,6 +13,7 @@ from ngome.auth.models import Device
 from ngome.auth.providers import EmailSender, GoogleVerifier
 from ngome.core.config import Settings
 from ngome.core.security import InvalidTokenError, decode_access_token
+from ngome.integrity.play import IntegrityVerifier
 from ngome.vault.storage import BlobStore
 
 _bearer = HTTPBearer(auto_error=False)
@@ -40,9 +41,14 @@ def get_blob_store(request: Request) -> BlobStore:
     return cast(BlobStore, request.app.state.blob_store)
 
 
+def get_integrity_verifier(request: Request) -> IntegrityVerifier:
+    return cast(IntegrityVerifier, request.app.state.integrity_verifier)
+
+
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 BlobStoreDep = Annotated[BlobStore, Depends(get_blob_store)]
+IntegrityVerifierDep = Annotated[IntegrityVerifier, Depends(get_integrity_verifier)]
 
 
 @dataclass(frozen=True, slots=True)

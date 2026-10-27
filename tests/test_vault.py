@@ -123,3 +123,15 @@ async def test_download_streams_the_whole_backup(client: httpx.AsyncClient, mail
         assert response.headers["content-length"] == str(len(blob))
         received = b"".join([chunk async for chunk in response.aiter_bytes()])
     assert received == blob
+
+
+async def test_integrity_tokens_are_ignored_while_play_integrity_is_off(
+    client: httpx.AsyncClient, mail: FakeMail
+) -> None:
+    auth = bearer(await sign_in(client, mail))
+    response = await client.post(
+        "/v1/vault/backups",
+        content=ciphertext(),
+        headers={**auth, **OCTET, "X-Pesaclarity-Integrity": "anything"},
+    )
+    assert response.status_code == 201, response.text

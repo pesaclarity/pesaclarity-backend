@@ -6,8 +6,21 @@ from typing import Annotated
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 
-from ngome.api.deps import BlobStoreDep, PrincipalDep, SessionDep, SettingsDep
+from ngome.api.deps import (
+    BlobStoreDep,
+    IntegrityVerifierDep,
+    PrincipalDep,
+    SessionDep,
+    SettingsDep,
+)
+from ngome.core.config import Settings
 from ngome.core.logging import get_logger
+from ngome.integrity.play import (
+    IntegrityFailedError,
+    IntegrityUnavailableError,
+    IntegrityVerifier,
+    request_hash_of_sha256_hex,
+)
 from ngome.vault import service
 from ngome.vault.models import Backup
 from ngome.vault.schemas import BackupOut
@@ -15,10 +28,49 @@ from ngome.vault.storage import BlobNotFoundError
 
 log = get_logger(__name__)
 
-# TODO(integrity): accept uploads only from genuine installs once Play Integrity checks land.
 router = APIRouter(prefix="/v1/vault/backups", tags=["vault"])
 
 _OCTET_STREAM = "application/octet-stream"
+# Matches the app's header (lib/src/core/integrity/integrity_attestor.dart).
+_INTEGRITY_HEADER = "X-Pesaclarity-Integrity"
+_MAX_INTEGRITY_TOKEN = 16 * 1024
+
+
+async def _check_integrity(
+    settings: Settings,
+    verifier: IntegrityVerifier,
+    token: str | None,
+    sha256_hex: str | None,
+) -> None:
+    """Apply the Play Integrity policy to an upload before its body is read."""
+    if not verifier.enabled:
+        return
+    if token is None:
+        if settings.vault_unattested_uploads == "reject":
+            log.info("integrity.unattested_rejected")
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Uploads need a verified install")
+        log.info("integrity.unattested_allowed")
+        return
+    if sha256_hex is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Send X-Content-SHA256 with {_INTEGRITY_HEADER}",
+        )
+    try:
+        await verifier.verify(token, request_hash_of_sha256_hex(sha256_hex))
+    except IntegrityFailedError as exc:
+        log.info("integrity.failed", reason=exc.reason)
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "This install could not be verified"
+        ) from None
+    except IntegrityUnavailableError:
+        log.warning("integrity.unavailable")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Could not verify this install now. Try again later.",
+            headers={"Retry-After": "60"},
+        ) from None
+    log.info("integrity.passed")
 
 
 def _out(backup: Backup) -> BackupOut:
@@ -46,15 +98,20 @@ async def upload(
     session: SessionDep,
     settings: SettingsDep,
     store: BlobStoreDep,
+    integrity: IntegrityVerifierDep,
     content_type: Annotated[str | None, Header()] = None,
     x_content_sha256: Annotated[str | None, Header(pattern=r"^[0-9a-fA-F]{64}$")] = None,
+    x_pesaclarity_integrity: Annotated[str | None, Header(max_length=_MAX_INTEGRITY_TOKEN)] = None,
 ) -> BackupOut:
     """Store a backup that the phone has already encrypted.
 
     Send ``X-Content-SHA256`` (hex) to have the server reject a body corrupted in transit.
+    Play builds also send ``X-Pesaclarity-Integrity``, a Play Integrity token bound to that
+    hash; the checksum check then ties the token to the stored bytes.
     """
     if content_type is None or content_type.split(";")[0].strip() != _OCTET_STREAM:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, f"Send {_OCTET_STREAM}")
+    await _check_integrity(settings, integrity, x_pesaclarity_integrity, x_content_sha256)
     declared = request.headers.get("content-length")
     if (
         declared is not None
