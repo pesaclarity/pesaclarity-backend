@@ -138,6 +138,14 @@ Before enabling it: enable `playintegrity.googleapis.com` in the Cloud project t
 
 `ngome.fl.server:app` is a Flower `ServerApp` running FedAvg under SecAgg+, with updates clipped on the phone and Gaussian noise added on the server. It needs the `fl` extra and runs on a Flower SuperLink, separately from the API. Its settings (`NGOME_FL_*` in `.env.example`) are placeholders until pesaclarity-ml publishes a privacy budget.
 
+## Branches and releases
+
+Every push to `main` deploys, so `main` takes only tested, approved changes.
+
+1. Pull requests go to `dev`, with a [Conventional Commits](https://www.conventionalcommits.org) title (`feat: …`, `fix: …`, `feat!: …` for a breaking change; `docs`, `test`, `ci`, `chore`, `refactor`, `build`, `perf`, `style`, `revert` too). The `PR title` check enforces it, and squash merges keep the title as the commit message. CI runs on every push to `dev`.
+2. When `dev` is ready, open a pull request from `dev` to `main`. The `Release gate` check allows only `dev` (or the release pull request) into `main`, and its QA job waits for a reviewer in the `qa` environment. Merge it with a merge commit, not a squash, so each change keeps its own title.
+3. On `main`, release-please keeps a release pull request open with the next version (SemVer from the titles: `feat` bumps the minor, `fix` the patch; before 1.0 a breaking change bumps the minor) in `pyproject.toml`, `uv.lock` and `ngome.__version__`, and the `CHANGELOG.md` entry. Merging it tags `vX.Y.Z` and merges the release back into `dev`.
+
 ## Deploying to Cloud Run
 
 The intended production setup runs in the EU: the API on Google Cloud Run, Postgres on [Neon](https://neon.tech), backup ciphertext on Cloudflare R2 with EU jurisdiction, and sign-in emails through [Brevo](https://www.brevo.com) over SMTP. At proof-of-concept traffic all four fit their free tiers; Cloud Run scales to zero, so the first request after a quiet spell takes a second or two.
