@@ -1,0 +1,41 @@
+name: Release gate
+
+# main is what users get. Changes collect on dev, and dev goes to main only
+# through a pull request that passes CI and QA. release-please's own release
+# pull request (version bump and changelog) is the one other way in.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  source:
+    name: From dev or a release
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check the source branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$HEAD_REF" in
+            dev|release-please--branches--main*) echo "OK: $HEAD_REF" ;;
+            *)
+              echo "::error::Open pull requests against dev. Only dev (or the release pull request) may merge into main."
+              exit 1
+              ;;
+          esac
+
+  qa:
+    name: QA approval
+    needs: source
+    if: github.head_ref == 'dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    # A reviewer named in the "qa" environment approves this job after checking
+    # the latest dev build.
+    environment: qa
+    steps:
+      - run: echo "QA approved ${{ github.event.pull_request.head.sha }}"
