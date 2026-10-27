@@ -130,6 +130,36 @@ To try object storage locally, `docker compose up -d minio minio-init` starts Mi
 
 `ngome.fl.server:app` is a Flower `ServerApp` running FedAvg under SecAgg+, with updates clipped on the phone and Gaussian noise added on the server. It needs the `fl` extra and runs on a Flower SuperLink, separately from the API. Its settings (`NGOME_FL_*` in `.env.example`) are placeholders until pesaclarity-ml publishes a privacy budget.
 
+## Deploying to Heroku
+
+The API runs on Heroku's container stack. `.github/workflows/deploy-heroku.yml` deploys `main` each time CI passes: it builds the image, runs the migrations as Heroku's release phase and puts the new web dyno live only if they succeed, then checks `/health/ready`.
+
+One-time setup, with the Heroku CLI:
+
+```sh
+heroku create <app-name> --stack container
+heroku addons:create heroku-postgresql:essential-0 --app <app-name>
+heroku addons:create scheduler:standard --app <app-name>
+heroku config:set --app <app-name> \
+  NGOME_ENVIRONMENT=production \
+  NGOME_JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+  NGOME_CONTACT_PEPPER="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+  NGOME_SMS_PROVIDER=disabled \
+  NGOME_GOOGLE_SIGN_IN_ENABLED=true \
+  NGOME_GOOGLE_CLIENT_IDS='["<web-client-id>.apps.googleusercontent.com"]'
+heroku addons:open scheduler --app <app-name>   # add a daily job: ngome-purge
+```
+
+Then, in the GitHub repo's settings, add the `HEROKU_API_KEY` secret (from `heroku authorizations:create`) and the `HEROKU_APP_NAME` variable. Until the variable exists the deploy job is skipped. You can also run it by hand from the Actions tab.
+
+Notes:
+
+- The server reads Heroku's `DATABASE_URL` and connects over TLS. `NGOME_DATABASE_URL` overrides it.
+- `NGOME_CONTACT_PEPPER` must never change once accounts exist; keep a copy somewhere safe.
+- `NGOME_SMS_PROVIDER=disabled` turns phone sign-in off (it answers `503`) until a real SMS provider is added, so the Play build signs in with Google only.
+- Backups default to the `postgres` blob store, which is fine for a small test group. The `essential-0` database holds 1 GB, so move to `s3` (Cloudflare R2 or AWS S3) before opening sign-ups.
+- The Flower aggregation server is not deployed here: it needs long-lived gRPC connections, which Heroku's router does not carry.
+
 ## Project layout
 
 ```
@@ -163,7 +193,7 @@ CI also runs those against MinIO, applies the migrations to Postgres, checks the
 
 ## Not done yet
 
-Named `TODO` markers in the code cover: a real SMS provider, Play Integrity checks on uploads, and loading and publishing the federated model.
+Named `TODO` markers in the code cover: a real SMS provider (phone sign-in can be switched off with `NGOME_SMS_PROVIDER=disabled` meanwhile), Play Integrity checks on uploads, and loading and publishing the federated model.
 
 ## Licence
 

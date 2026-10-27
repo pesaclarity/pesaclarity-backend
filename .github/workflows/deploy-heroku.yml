@@ -1,0 +1,59 @@
+name: Deploy to Heroku
+
+# Deploys main once CI passes. Needs the HEROKU_API_KEY secret and the
+# HEROKU_APP_NAME variable; without the variable the job is skipped.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-heroku
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and release
+    if: >-
+      vars.HEROKU_APP_NAME != '' && (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'))
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+      HEROKU_APP: ${{ vars.HEROKU_APP_NAME }}
+      REGISTRY: registry.heroku.com/${{ vars.HEROKU_APP_NAME }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Build images
+        run: |
+          docker build --provenance=false -t ngome:base .
+          docker build --provenance=false -f deploy/heroku/web.Dockerfile -t "$REGISTRY/web" .
+          docker build --provenance=false -f deploy/heroku/release.Dockerfile -t "$REGISTRY/release" .
+
+      - name: Push to Heroku's registry
+        run: |
+          echo "$HEROKU_API_KEY" | docker login --username=_ --password-stdin registry.heroku.com
+          docker push "$REGISTRY/web"
+          docker push "$REGISTRY/release"
+
+      - name: Install the Heroku CLI
+        run: curl -fsSL https://cli-assets.heroku.com/install.sh | sh
+
+      # Runs migrations (the release image) first; the web image goes live only if they pass.
+      - name: Release
+        run: heroku container:release web release --app "$HEROKU_APP"
+
+      - name: Check health
+        run: |
+          url="$(heroku apps:info --app "$HEROKU_APP" --json | jq -r '.app.web_url')"
+          curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "${url%/}/health/ready"
