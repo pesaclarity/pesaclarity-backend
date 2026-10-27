@@ -62,6 +62,21 @@ def test_settings_need_a_host_and_sender_for_smtp(tmp_path: Path) -> None:
         make_settings(tmp_path, email_provider="smtp", smtp_host="smtp.example.com")
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "postgresql://u:p@ep-x.eu-central-1.aws.neon.tech/d?sslmode=require&channel_binding=require",
+            "postgresql+asyncpg://u:p@ep-x.eu-central-1.aws.neon.tech/d?ssl=require",
+        ),
+        ("postgres://u:p@localhost:5432/d", "postgresql+asyncpg://u:p@localhost:5432/d"),
+        ("postgresql+asyncpg://u:p@localhost/d", "postgresql+asyncpg://u:p@localhost/d"),
+    ],
+)
+def test_settings_convert_libpq_database_urls(tmp_path: Path, url: str, expected: str) -> None:
+    assert make_settings(tmp_path, database_url=url).database_url == expected
+
+
 async def test_logs_carry_no_contact_code_or_payload(
     capfd: pytest.CaptureFixture[str], client: httpx.AsyncClient, mail: FakeMail
 ) -> None:
