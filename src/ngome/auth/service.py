@@ -104,14 +104,12 @@ async def start_email_sign_in(
     session.add(challenge)
     await session.commit()
 
-    minutes = settings.otp_ttl_seconds // 60
+    # Settings validation guarantees both templates exist and format cleanly.
+    values = {"code": code, "minutes": settings.otp_ttl_seconds // 60}
     await mail.send(
         email,
-        f"Your Pesa Clarity code: {code}",
-        f"Your Pesa Clarity sign-in code is {code}.\n\n"
-        f"It works for {minutes} minutes. Keep it to yourself: "
-        "Pesa Clarity will never ask you for it.\n\n"
-        "If you did not ask for a code, you can ignore this email.\n",
+        str(settings.email_code_subject).format(**values),
+        str(settings.email_code_body).format(**values),
     )
     log.info("otp.issued", challenge_id=str(challenge_id))
     return challenge

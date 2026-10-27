@@ -205,6 +205,8 @@ async def test_smtp_sender_uses_starttls_and_login(
         tmp_path,
         email_provider="smtp",
         smtp_host="smtp-relay.example.com",
+        smtp_port=587,
+        smtp_timeout_seconds=5,
         smtp_username="relay-user",
         smtp_password=SecretStr("relay-password"),
         email_from="Pesa Clarity <codes@example.com>",

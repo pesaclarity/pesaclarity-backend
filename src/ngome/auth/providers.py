@@ -34,8 +34,13 @@ class SmtpEmailSender:
     """Sends through any SMTP relay (Brevo, Resend, Amazon SES...) over STARTTLS."""
 
     def __init__(self, settings: Settings) -> None:
-        if settings.smtp_host is None or settings.email_from is None:
-            raise ValueError("smtp_host and email_from are required for the smtp provider")
+        if (
+            settings.smtp_host is None
+            or settings.smtp_port is None
+            or settings.smtp_timeout_seconds is None
+            or settings.email_from is None
+        ):
+            raise ValueError("SMTP settings are incomplete")
         self._host = settings.smtp_host
         self._port = settings.smtp_port
         self._username = settings.smtp_username
@@ -82,6 +87,13 @@ class UnconfiguredGoogleVerifier:
 
 
 def build_email_sender(settings: Settings) -> EmailSender:
+    """The API's sender. Migrations and the purge job never send email, so only the API
+    needs the wording and provider settings; it refuses to start without them."""
+    missing = [
+        name for name in ("email_code_subject", "email_code_body") if not getattr(settings, name)
+    ]
+    if missing:
+        raise ValueError(f"{', '.join(missing)} must be set to send sign-in codes")
     match settings.email_provider:
         case "console":
             return ConsoleEmailSender()

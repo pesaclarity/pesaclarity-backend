@@ -84,6 +84,8 @@ def make_settings(tmp_path: Path, **overrides: object) -> Settings:
         "vault_keep_backups": 3,
         "google_sign_in_enabled": True,
         "google_client_ids": ["test-client.apps.example"],
+        "email_code_subject": "Test code: {code}",
+        "email_code_body": "Your test code is {code}. It works for {minutes} minutes.",
     }
     values.update(overrides)
     return Settings(**values)  # type: ignore[arg-type]
