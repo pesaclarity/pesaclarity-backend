@@ -162,7 +162,7 @@ async def test_vault_api_on_s3(s3_store: S3BlobStore, tmp_path: Path, mail: Fake
         vault_max_backup_bytes=MIN_PART_BYTES * 3,
     )
     app = create_app(settings)
-    app.state.email_sender = FakeMail()
+    app.state.email_sender = mail
     async with app.state.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     blob = os.urandom(MIN_PART_BYTES + 10)
