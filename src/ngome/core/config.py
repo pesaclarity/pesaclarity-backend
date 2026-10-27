@@ -29,12 +29,18 @@ class Settings(BaseSettings):
     access_token_ttl_seconds: int = Field(default=600, ge=60, le=3600)
     refresh_token_ttl_days: int = Field(default=30, ge=1, le=180)
 
-    default_phone_region: str = "KE"
     otp_length: int = Field(default=6, ge=6, le=8)
     otp_ttl_seconds: int = Field(default=300, ge=60, le=900)
     otp_max_attempts: int = Field(default=5, ge=1, le=10)
     otp_max_per_hour: int = Field(default=5, ge=1, le=20)
-    sms_provider: Literal["console"] = "console"
+    # "console" prints codes to stdout and is refused in production; "smtp" sends them.
+    email_provider: Literal["console", "smtp"] = "console"
+    email_from: str | None = Field(default=None, examples=["Pesa Clarity <codes@pesaclarity.org>"])
+    smtp_host: str | None = Field(default=None, examples=["smtp-relay.brevo.com"])
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
 
     google_sign_in_enabled: bool = False
     google_client_ids: list[str] = Field(default_factory=list)
@@ -76,8 +82,12 @@ class Settings(BaseSettings):
             value: SecretStr = getattr(self, name)
             if len(value.get_secret_value()) < _MIN_SECRET_LENGTH:
                 raise ValueError(f"{name} must be at least {_MIN_SECRET_LENGTH} characters")
-        if self.environment == "production" and self.sms_provider == "console":
-            raise ValueError("the console SMS provider prints codes and must not run in production")
+        if self.environment == "production" and self.email_provider == "console":
+            raise ValueError(
+                "the console email provider prints codes and must not run in production"
+            )
+        if self.email_provider == "smtp" and not (self.smtp_host and self.email_from):
+            raise ValueError("smtp_host and email_from are required for the smtp email provider")
         if self.google_sign_in_enabled and not self.google_client_ids:
             raise ValueError("google_client_ids is required when Google sign-in is enabled")
         if self.vault_blob_store == "s3" and not self.vault_s3_bucket:

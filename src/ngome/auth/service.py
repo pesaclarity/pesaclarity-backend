@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 
-import phonenumbers
+from email_validator import EmailNotValidError, validate_email
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +17,7 @@ from ngome.auth.models import (
     OtpChallenge,
     RefreshToken,
 )
-from ngome.auth.providers import SmsSender
+from ngome.auth.providers import EmailSender
 from ngome.core.config import Settings
 from ngome.core.logging import get_logger
 from ngome.core.security import (
@@ -35,7 +35,7 @@ from ngome.vault import service as vault_service
 log = get_logger(__name__)
 
 
-class InvalidPhoneError(Exception):
+class InvalidEmailError(Exception):
     pass
 
 
@@ -64,22 +64,21 @@ class IssuedTokens:
     device_id: uuid.UUID
 
 
-def normalise_phone(raw: str, region: str) -> str:
+def normalise_email(raw: str) -> str:
+    """One canonical form per mailbox, so the same address always hashes the same way."""
     try:
-        parsed = phonenumbers.parse(raw, region)
-    except phonenumbers.NumberParseException as exc:
-        raise InvalidPhoneError from exc
-    if not phonenumbers.is_valid_number(parsed):
-        raise InvalidPhoneError
-    return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+        result = validate_email(raw.strip(), check_deliverability=False)
+    except EmailNotValidError as exc:
+        raise InvalidEmailError from exc
+    return result.normalized.lower()
 
 
-async def start_phone_sign_in(
-    session: AsyncSession, settings: Settings, sms: SmsSender, raw_phone: str
+async def start_email_sign_in(
+    session: AsyncSession, settings: Settings, mail: EmailSender, raw_email: str
 ) -> OtpChallenge:
-    """Create and send a one-time code. Behaves the same whether or not an account exists."""
-    phone = normalise_phone(raw_phone, settings.default_phone_region)
-    contact_hash = hash_contact(settings, ContactKind.PHONE, phone)
+    """Create and email a one-time code. Behaves the same whether or not an account exists."""
+    email = normalise_email(raw_email)
+    contact_hash = hash_contact(settings, ContactKind.EMAIL, email)
     now = utcnow()
 
     recent = await session.scalar(
@@ -105,12 +104,20 @@ async def start_phone_sign_in(
     session.add(challenge)
     await session.commit()
 
-    await sms.send(phone, f"Your Pesa Clarity code is {code}. Do not share it with anyone.")
+    minutes = settings.otp_ttl_seconds // 60
+    await mail.send(
+        email,
+        f"Your Pesa Clarity code: {code}",
+        f"Your Pesa Clarity sign-in code is {code}.\n\n"
+        f"It works for {minutes} minutes. Keep it to yourself: "
+        "Pesa Clarity will never ask you for it.\n\n"
+        "If you did not ask for a code, you can ignore this email.\n",
+    )
     log.info("otp.issued", challenge_id=str(challenge_id))
     return challenge
 
 
-async def verify_phone_sign_in(
+async def verify_email_sign_in(
     session: AsyncSession,
     settings: Settings,
     challenge_id: uuid.UUID,
@@ -133,7 +140,7 @@ async def verify_phone_sign_in(
         raise InvalidCodeError
 
     challenge.consumed_at = now
-    return await _sign_in(session, settings, ContactKind.PHONE, challenge.contact_hash, device_name)
+    return await _sign_in(session, settings, ContactKind.EMAIL, challenge.contact_hash, device_name)
 
 
 async def google_sign_in(

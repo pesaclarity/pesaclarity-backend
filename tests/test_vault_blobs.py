@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 
 from ngome.vault import service
 from ngome.vault.models import Backup, BlobDeletion
-from tests.conftest import OTHER_PHONE, FakeSms, MemoryBlobStore, bearer, sign_in
+from tests.conftest import OTHER_EMAIL, FakeMail, MemoryBlobStore, bearer, sign_in
 from tests.test_vault import OCTET, ciphertext
 
 
@@ -32,9 +32,9 @@ async def queued(app: FastAPI) -> list[BlobDeletion]:
 
 
 async def test_object_keys_are_random_and_carry_no_identifiers(
-    app: FastAPI, client: httpx.AsyncClient, sms: FakeSms, memory_store: MemoryBlobStore
+    app: FastAPI, client: httpx.AsyncClient, mail: FakeMail, memory_store: MemoryBlobStore
 ) -> None:
-    tokens = await sign_in(client, sms)
+    tokens = await sign_in(client, mail)
     blob = ciphertext()
     backup_id = await upload(client, bearer(tokens), blob)
 
@@ -49,9 +49,9 @@ async def test_object_keys_are_random_and_carry_no_identifiers(
 
 
 async def test_delete_removes_the_object(
-    app: FastAPI, client: httpx.AsyncClient, sms: FakeSms, memory_store: MemoryBlobStore
+    app: FastAPI, client: httpx.AsyncClient, mail: FakeMail, memory_store: MemoryBlobStore
 ) -> None:
-    auth = bearer(await sign_in(client, sms))
+    auth = bearer(await sign_in(client, mail))
     backup_id = await upload(client, auth, ciphertext())
     assert (await client.delete(f"/v1/vault/backups/{backup_id}", headers=auth)).status_code == 204
     assert memory_store.objects == {}
@@ -59,9 +59,9 @@ async def test_delete_removes_the_object(
 
 
 async def test_pruning_removes_old_objects(
-    app: FastAPI, client: httpx.AsyncClient, sms: FakeSms, memory_store: MemoryBlobStore
+    app: FastAPI, client: httpx.AsyncClient, mail: FakeMail, memory_store: MemoryBlobStore
 ) -> None:
-    auth = bearer(await sign_in(client, sms))
+    auth = bearer(await sign_in(client, mail))
     blobs = [ciphertext() for _ in range(5)]
     for blob in blobs:
         await upload(client, auth, blob)
@@ -70,9 +70,9 @@ async def test_pruning_removes_old_objects(
 
 
 async def test_rejected_uploads_leave_no_object(
-    app: FastAPI, client: httpx.AsyncClient, sms: FakeSms, memory_store: MemoryBlobStore
+    app: FastAPI, client: httpx.AsyncClient, mail: FakeMail, memory_store: MemoryBlobStore
 ) -> None:
-    auth = bearer(await sign_in(client, sms))
+    auth = bearer(await sign_in(client, mail))
     mismatch = await client.post(
         "/v1/vault/backups",
         content=ciphertext(),
@@ -96,10 +96,10 @@ async def test_rejected_uploads_leave_no_object(
 
 
 async def test_account_deletion_removes_its_objects_only(
-    client: httpx.AsyncClient, sms: FakeSms, memory_store: MemoryBlobStore
+    client: httpx.AsyncClient, mail: FakeMail, memory_store: MemoryBlobStore
 ) -> None:
-    mine = bearer(await sign_in(client, sms))
-    theirs = bearer(await sign_in(client, sms, phone=OTHER_PHONE))
+    mine = bearer(await sign_in(client, mail))
+    theirs = bearer(await sign_in(client, mail, email=OTHER_EMAIL))
     await upload(client, mine, ciphertext())
     await upload(client, mine, ciphertext())
     kept = ciphertext()
@@ -110,9 +110,9 @@ async def test_account_deletion_removes_its_objects_only(
 
 
 async def test_failed_object_deletes_are_queued_and_retried(
-    app: FastAPI, client: httpx.AsyncClient, sms: FakeSms, memory_store: MemoryBlobStore
+    app: FastAPI, client: httpx.AsyncClient, mail: FakeMail, memory_store: MemoryBlobStore
 ) -> None:
-    auth = bearer(await sign_in(client, sms))
+    auth = bearer(await sign_in(client, mail))
     backup_id = await upload(client, auth, ciphertext())
     memory_store.fail_deletes = True
 
@@ -135,9 +135,9 @@ async def test_failed_object_deletes_are_queued_and_retried(
 
 
 async def test_failed_discard_is_queued(
-    app: FastAPI, client: httpx.AsyncClient, sms: FakeSms, memory_store: MemoryBlobStore
+    app: FastAPI, client: httpx.AsyncClient, mail: FakeMail, memory_store: MemoryBlobStore
 ) -> None:
-    auth = bearer(await sign_in(client, sms))
+    auth = bearer(await sign_in(client, mail))
     memory_store.fail_deletes = True
     response = await client.post(
         "/v1/vault/backups",
@@ -152,9 +152,9 @@ async def test_failed_discard_is_queued(
 
 
 async def test_missing_object_reads_as_not_found(
-    client: httpx.AsyncClient, sms: FakeSms, memory_store: MemoryBlobStore
+    client: httpx.AsyncClient, mail: FakeMail, memory_store: MemoryBlobStore
 ) -> None:
-    auth = bearer(await sign_in(client, sms))
+    auth = bearer(await sign_in(client, mail))
     blob = ciphertext()
     backup_id = await upload(client, auth, blob)
     memory_store.objects.clear()

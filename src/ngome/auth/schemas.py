@@ -8,16 +8,16 @@ from pydantic import BaseModel, Field
 DeviceName = Field(min_length=1, max_length=64, examples=["Tecno Spark 20"])
 
 
-class PhoneStartRequest(BaseModel):
-    phone: str = Field(min_length=6, max_length=20, examples=["0700 000 000"])
+class EmailStartRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254, examples=["wanjiku@example.com"])
 
 
-class PhoneStartResponse(BaseModel):
+class EmailStartResponse(BaseModel):
     challenge_id: uuid.UUID
     expires_in: int
 
 
-class PhoneVerifyRequest(BaseModel):
+class EmailVerifyRequest(BaseModel):
     challenge_id: uuid.UUID
     code: str = Field(pattern=r"^\d{6,8}$")
     device_name: str = DeviceName

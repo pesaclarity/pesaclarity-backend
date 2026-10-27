@@ -3,22 +3,22 @@ from fastapi import FastAPI
 from sqlalchemy import func, select
 
 from ngome.db.models import Account, AuthEvent, Backup, Device, OtpChallenge, RefreshToken
-from tests.conftest import OTHER_PHONE, FakeSms, bearer, sign_in
+from tests.conftest import OTHER_EMAIL, FakeMail, bearer, sign_in
 
 
-async def test_get_account(client: httpx.AsyncClient, sms: FakeSms) -> None:
-    tokens = await sign_in(client, sms)
+async def test_get_account(client: httpx.AsyncClient, mail: FakeMail) -> None:
+    tokens = await sign_in(client, mail)
     response = await client.get("/v1/account", headers=bearer(tokens))
     assert response.status_code == 200
     assert response.json()["id"] == tokens["account_id"]
-    assert response.json()["contact_kind"] == "phone"
+    assert response.json()["contact_kind"] == "email"
 
 
 async def test_delete_account_erases_everything(
-    app: FastAPI, client: httpx.AsyncClient, sms: FakeSms
+    app: FastAPI, client: httpx.AsyncClient, mail: FakeMail
 ) -> None:
-    tokens = await sign_in(client, sms)
-    other = await sign_in(client, sms, phone=OTHER_PHONE)
+    tokens = await sign_in(client, mail)
+    other = await sign_in(client, mail, email=OTHER_EMAIL)
     await client.post(
         "/v1/vault/backups",
         content=b"\x00" * 64,

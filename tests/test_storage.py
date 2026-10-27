@@ -22,7 +22,7 @@ from ngome.vault.storage import (
     S3BlobStore,
     new_object_key,
 )
-from tests.conftest import FakeSms, bearer, make_settings, sign_in
+from tests.conftest import FakeMail, bearer, make_settings, sign_in
 
 
 async def chunks_of(data: bytes, size: int = 1000) -> AsyncIterator[bytes]:
@@ -149,7 +149,7 @@ async def test_s3_store(s3_store: S3BlobStore) -> None:
 
 @pytest.mark.object_storage
 @object_storage
-async def test_vault_api_on_s3(s3_store: S3BlobStore, tmp_path: Path, sms: FakeSms) -> None:
+async def test_vault_api_on_s3(s3_store: S3BlobStore, tmp_path: Path, mail: FakeMail) -> None:
     settings = make_settings(
         tmp_path,
         vault_blob_store="s3",
@@ -162,14 +162,14 @@ async def test_vault_api_on_s3(s3_store: S3BlobStore, tmp_path: Path, sms: FakeS
         vault_max_backup_bytes=MIN_PART_BYTES * 3,
     )
     app = create_app(settings)
-    app.state.sms_sender = sms
+    app.state.email_sender = FakeMail()
     async with app.state.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     blob = os.urandom(MIN_PART_BYTES + 10)
     transport = httpx.ASGITransport(app=app)
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            auth = bearer(await sign_in(client, sms))
+            auth = bearer(await sign_in(client, mail))
             created = await client.post(
                 "/v1/vault/backups",
                 content=chunks_of(blob, 256 * 1024),

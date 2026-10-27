@@ -36,7 +36,7 @@ async def _seed(settings: Settings) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with create_sessionmaker(engine)() as session:
-        account = Account(contact_kind=ContactKind.PHONE, contact_hash="a" * 64)
+        account = Account(contact_kind=ContactKind.EMAIL, contact_hash="a" * 64)
         session.add(account)
         await session.flush()
         session.add_all(

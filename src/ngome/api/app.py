@@ -10,7 +10,7 @@ from ngome import __version__
 from ngome.api.routes import account, health
 from ngome.auth import router as auth_router
 from ngome.auth.google import build_google_verifier
-from ngome.auth.providers import build_sms_sender
+from ngome.auth.providers import build_email_sender
 from ngome.core.config import Settings, get_settings
 from ngome.core.logging import configure_logging, get_logger
 from ngome.db.session import create_engine, create_sessionmaker
@@ -51,7 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = engine
     app.state.sessionmaker = sessionmaker
     app.state.blob_store = blob_store
-    app.state.sms_sender = build_sms_sender(settings)
+    app.state.email_sender = build_email_sender(settings)
     app.state.google_verifier = build_google_verifier(settings)
 
     @app.middleware("http")
