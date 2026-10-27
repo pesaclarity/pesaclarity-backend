@@ -26,6 +26,17 @@ class ConsoleSmsSender:
         print(f"[dev sms to ...{phone_e164[-3:]}] {text}", flush=True)  # noqa: T201
 
 
+class PhoneSignInDisabledError(Exception):
+    """Phone sign-in is switched off on this server."""
+
+
+class DisabledSmsSender:
+    """Sends nothing: phone sign-in is off on this server."""
+
+    async def send(self, phone_e164: str, text: str) -> None:
+        raise PhoneSignInDisabledError
+
+
 @dataclass(frozen=True, slots=True)
 class GoogleIdentity:
     subject: str
@@ -52,3 +63,5 @@ def build_sms_sender(settings: Settings) -> SmsSender:
     match settings.sms_provider:
         case "console":
             return ConsoleSmsSender()
+        case "disabled":
+            return DisabledSmsSender()

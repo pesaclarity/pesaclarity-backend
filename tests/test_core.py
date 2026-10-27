@@ -6,6 +6,7 @@ import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from ngome.core.config import Settings
 from ngome.core.logging import REDACTED, redact_sensitive
 from ngome.core.security import (
     InvalidTokenError,
@@ -55,6 +56,49 @@ def test_settings_reject_weak_secrets(tmp_path: Path) -> None:
 def test_settings_refuse_console_sms_in_production(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="console SMS provider"):
         make_settings(tmp_path, environment="production")
+
+
+def test_settings_allow_disabled_sms_in_production(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, environment="production", sms_provider="disabled")
+    assert settings.sms_provider == "disabled"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "postgres://u:p@db.example:5432/d",
+            "postgresql+asyncpg://u:p@db.example:5432/d?ssl=require",
+        ),
+        (
+            "postgresql://u:p@db.example/d?sslmode=verify-full",
+            "postgresql+asyncpg://u:p@db.example/d?ssl=verify-full",
+        ),
+        ("postgresql://u:p@localhost/d", "postgresql+asyncpg://u:p@localhost/d"),
+        ("postgresql+asyncpg://u:p@localhost/d", "postgresql+asyncpg://u:p@localhost/d"),
+    ],
+)
+def test_settings_convert_host_database_urls(tmp_path: Path, url: str, expected: str) -> None:
+    assert make_settings(tmp_path, database_url=url).database_url == expected
+
+
+def test_settings_read_heroku_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NGOME_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgres://u:p@db.example:5432/d")
+    settings = Settings(
+        jwt_secret=SecretStr("test-jwt-secret-" + "x" * 32),
+        contact_pepper=SecretStr("test-contact-pepper-" + "y" * 32),
+        _env_file=None,
+    )
+    assert settings.database_url == "postgresql+asyncpg://u:p@db.example:5432/d?ssl=require"
+
+    monkeypatch.setenv("NGOME_DATABASE_URL", "postgresql+asyncpg://n:n@localhost/n")
+    settings = Settings(
+        jwt_secret=SecretStr("test-jwt-secret-" + "x" * 32),
+        contact_pepper=SecretStr("test-contact-pepper-" + "y" * 32),
+        _env_file=None,
+    )
+    assert settings.database_url == "postgresql+asyncpg://n:n@localhost/n"
 
 
 async def test_logs_carry_no_contact_code_or_payload(

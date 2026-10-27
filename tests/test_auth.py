@@ -1,9 +1,13 @@
+from pathlib import Path
+
 import httpx
 from fastapi import FastAPI
 from sqlalchemy import select
 
+from ngome.api.app import create_app
 from ngome.auth.models import Account, AuthEvent, AuthEventKind
-from tests.conftest import OTHER_PHONE, PHONE, FakeSms, bearer, sign_in
+from ngome.db.models import Base
+from tests.conftest import OTHER_PHONE, PHONE, FakeSms, bearer, make_settings, sign_in
 
 
 async def _events(app: FastAPI) -> list[AuthEventKind]:
@@ -156,3 +160,14 @@ async def test_google_sign_in_can_be_disabled(app: FastAPI, client: httpx.AsyncC
         "/v1/auth/google", json={"id_token": "valid:google-subject-1", "device_name": "Pixel"}
     )
     assert response.status_code == 404
+
+
+async def test_phone_sign_in_can_be_switched_off(tmp_path: Path) -> None:
+    application = create_app(make_settings(tmp_path, sms_provider="disabled"))
+    async with application.state.engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/v1/auth/phone/start", json={"phone": PHONE})
+    await application.state.engine.dispose()
+    assert response.status_code == 503

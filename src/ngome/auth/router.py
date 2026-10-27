@@ -45,6 +45,10 @@ async def phone_start(
     settings: SettingsDep,
     sms: Annotated[SmsSender, Depends(get_sms_sender)],
 ) -> PhoneStartResponse:
+    if settings.sms_provider == "disabled":
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Phone sign-in is not available on this server"
+        )
     try:
         challenge = await service.start_phone_sign_in(session, settings, sms, body.phone)
     except service.InvalidPhoneError:
