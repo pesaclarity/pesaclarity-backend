@@ -3,8 +3,9 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "test", "production"]
@@ -69,6 +70,21 @@ class Settings(BaseSettings):
     vault_s3_secret_access_key: SecretStr | None = None
     vault_s3_addressing_style: Literal["auto", "virtual", "path"] = "auto"
     vault_s3_part_bytes: int = Field(default=8 * 1024 * 1024, ge=5 * 1024 * 1024)
+
+    @field_validator("database_url")
+    @classmethod
+    def _asyncpg_url(cls, value: str) -> str:
+        """Accept the plain ``postgres://`` URLs that hosts such as Neon hand out."""
+        parts = urlsplit(value)
+        if parts.scheme not in {"postgres", "postgresql"}:
+            return value
+        query = dict(parse_qsl(parts.query))
+        # asyncpg takes "ssl", not libpq's "sslmode", and has no "channel_binding" option.
+        sslmode = query.pop("sslmode", None)
+        query.pop("channel_binding", None)
+        if sslmode and "ssl" not in query:
+            query["ssl"] = sslmode
+        return urlunsplit(parts._replace(scheme="postgresql+asyncpg", query=urlencode(query)))
 
     @model_validator(mode="after")
     def _check_secrets(self) -> Self:

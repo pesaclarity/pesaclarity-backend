@@ -57,6 +57,21 @@ def test_settings_refuse_console_sms_in_production(tmp_path: Path) -> None:
         make_settings(tmp_path, environment="production")
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "postgresql://u:p@ep-x.eu-central-1.aws.neon.tech/d?sslmode=require&channel_binding=require",
+            "postgresql+asyncpg://u:p@ep-x.eu-central-1.aws.neon.tech/d?ssl=require",
+        ),
+        ("postgres://u:p@localhost:5432/d", "postgresql+asyncpg://u:p@localhost:5432/d"),
+        ("postgresql+asyncpg://u:p@localhost/d", "postgresql+asyncpg://u:p@localhost/d"),
+    ],
+)
+def test_settings_convert_libpq_database_urls(tmp_path: Path, url: str, expected: str) -> None:
+    assert make_settings(tmp_path, database_url=url).database_url == expected
+
+
 async def test_logs_carry_no_contact_code_or_payload(
     capfd: pytest.CaptureFixture[str], client: httpx.AsyncClient, sms: FakeSms
 ) -> None:
