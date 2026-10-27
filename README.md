@@ -126,6 +126,14 @@ When a backup goes (deleted, pruned, or with its account), its object is queued 
 
 To try object storage locally, `docker compose up -d minio minio-init` starts MinIO on port 9000 (console on 9001) with `ngome-backups` and `ngome-test` buckets; then set `NGOME_VAULT_BLOB_STORE=s3` and the MinIO credentials from `docker-compose.yml` in `.env`.
 
+### Play Integrity
+
+Play builds send `X-Pesaclarity-Integrity` with each vault upload: a Play Integrity token bound to the body's SHA-256 (sent as `X-Content-SHA256`, which the upload checksum then ties to the stored bytes). With `NGOME_PLAY_INTEGRITY_ENABLED=true` the server decodes the token with the Play Integrity API, as the service account it runs as, and accepts it only if it was made for this request and package, `appRecognitionVerdict` is `PLAY_RECOGNIZED`, the device verdict includes `NGOME_PLAY_INTEGRITY_DEVICE_VERDICT`, and it is no older than `NGOME_PLAY_INTEGRITY_MAX_TOKEN_AGE_SECONDS`. A failing token gets `403`; if Google cannot be reached the upload gets `503` with `Retry-After`.
+
+F-Droid builds cannot attest, and nothing stops a client leaving the header out, so uploads without a token follow `NGOME_VAULT_UNATTESTED_UPLOADS`: `allow` or `reject`. All four settings are required once Play Integrity is enabled; while it is off, tokens are ignored.
+
+Before enabling it: enable `playintegrity.googleapis.com` in the Cloud project the server runs in, and link that project to the app in Play Console (**App integrity → Play Integrity API**). The app's build gets the same project number as `PESACLARITY_PLAY_CLOUD_PROJECT`.
+
 ### Federated learning
 
 `ngome.fl.server:app` is a Flower `ServerApp` running FedAvg under SecAgg+, with updates clipped on the phone and Gaussian noise added on the server. It needs the `fl` extra and runs on a Flower SuperLink, separately from the API. Its settings (`NGOME_FL_*` in `.env.example`) are placeholders until pesaclarity-ml publishes a privacy budget.
@@ -156,7 +164,8 @@ POOL_ID=<workload identity pool> PROVIDER_ID=<pool provider>
    ```sh
    gcloud config set project "$PROJECT"
    gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
-     secretmanager.googleapis.com cloudscheduler.googleapis.com iamcredentials.googleapis.com
+     secretmanager.googleapis.com cloudscheduler.googleapis.com iamcredentials.googleapis.com \
+     playintegrity.googleapis.com
    gcloud artifacts repositories create "$AR_REPO" --repository-format docker --location "$REGION"
 
    # Who the API runs as, and who GitHub deploys as.
@@ -227,6 +236,11 @@ POOL_ID=<workload identity pool> PROVIDER_ID=<pool provider>
    NGOME_VAULT_S3_REGION: "<region, auto for R2>"
    NGOME_GOOGLE_SIGN_IN_ENABLED: "<true or false>"
    NGOME_GOOGLE_CLIENT_IDS: '["<web client id>"]'
+   NGOME_PLAY_INTEGRITY_ENABLED: "<true or false>"
+   NGOME_PLAY_INTEGRITY_PACKAGE_NAME: "<application id>"
+   NGOME_PLAY_INTEGRITY_DEVICE_VERDICT: "<MEETS_BASIC_INTEGRITY, MEETS_DEVICE_INTEGRITY or MEETS_STRONG_INTEGRITY>"
+   NGOME_PLAY_INTEGRITY_MAX_TOKEN_AGE_SECONDS: "<seconds>"
+   NGOME_VAULT_UNATTESTED_UPLOADS: "<allow or reject>"
    FORWARDED_ALLOW_IPS: "*"
    ```
 
@@ -278,7 +292,7 @@ CI also runs those against MinIO, applies the migrations to Postgres, checks the
 
 ## Not done yet
 
-Named `TODO` markers in the code cover: Play Integrity checks on uploads, and loading and publishing the federated model.
+Named `TODO` markers in the code cover loading and publishing the federated model. Play Integrity checks on federated updates come with the Flower deployment.
 
 ## Licence
 

@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     retention_otp_challenge_hours: int = Field(default=24, ge=1, le=24 * 30)
     retention_auth_event_days: int = Field(default=90, ge=1, le=730)
 
+    # Play Integrity (play builds only). Every value is required once it is enabled.
+    play_integrity_enabled: bool = False
+    play_integrity_package_name: str | None = None
+    play_integrity_device_verdict: (
+        Literal["MEETS_BASIC_INTEGRITY", "MEETS_DEVICE_INTEGRITY", "MEETS_STRONG_INTEGRITY"] | None
+    ) = None
+    play_integrity_max_token_age_seconds: int | None = Field(default=None, ge=10, le=3600)
+    # Uploads without a token: F-Droid builds, and play builds that could not attest.
+    vault_unattested_uploads: Literal["allow", "reject"] | None = None
+
     vault_max_backup_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
     vault_keep_backups: int = Field(default=10, ge=1, le=100)
     vault_max_account_bytes: int = Field(
@@ -129,6 +139,23 @@ class Settings(BaseSettings):
             raise ValueError("vault_s3_bucket is required when vault_blob_store is 's3'")
         if self.vault_blob_store == "filesystem" and self.vault_fs_root is None:
             raise ValueError("vault_fs_root is required when vault_blob_store is 'filesystem'")
+        return self
+
+    @model_validator(mode="after")
+    def _check_play_integrity(self) -> Self:
+        if self.play_integrity_enabled:
+            missing = [
+                name
+                for name in (
+                    "play_integrity_package_name",
+                    "play_integrity_device_verdict",
+                    "play_integrity_max_token_age_seconds",
+                    "vault_unattested_uploads",
+                )
+                if getattr(self, name) is None
+            ]
+            if missing:
+                raise ValueError(f"{', '.join(missing)} required when Play Integrity is enabled")
         return self
 
 
