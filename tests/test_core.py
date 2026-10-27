@@ -6,6 +6,8 @@ import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from ngome.api.app import create_app
+from ngome.core.config import Settings
 from ngome.core.logging import REDACTED, redact_sensitive
 from ngome.core.security import (
     InvalidTokenError,
@@ -57,9 +59,30 @@ def test_settings_refuse_console_email_in_production(tmp_path: Path) -> None:
         make_settings(tmp_path, environment="production")
 
 
-def test_settings_need_a_host_and_sender_for_smtp(tmp_path: Path) -> None:
-    with pytest.raises(ValidationError, match="smtp_host and email_from"):
+def test_settings_need_every_smtp_value(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="email_from, smtp_port, smtp_timeout_seconds"):
         make_settings(tmp_path, email_provider="smtp", smtp_host="smtp.example.com")
+
+
+@pytest.mark.parametrize("name", ["email_code_subject", "email_code_body"])
+def test_api_needs_the_email_wording(tmp_path: Path, name: str) -> None:
+    with pytest.raises(ValueError, match=f"{name} must be set"):
+        create_app(make_settings(tmp_path, **{name: None}))
+
+
+def test_settings_refuse_unknown_placeholders(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="placeholders"):
+        make_settings(tmp_path, email_code_subject="Hi {name}, your code is {code}")
+
+
+async def test_sign_in_email_uses_the_configured_wording(
+    client: httpx.AsyncClient, mail: FakeMail, settings: Settings
+) -> None:
+    await sign_in(client, mail)
+    assert mail.sent[-1][1] == (
+        f"Your test code is {mail.last_code()}. "
+        f"It works for {settings.otp_ttl_seconds // 60} minutes."
+    )
 
 
 @pytest.mark.parametrize(
