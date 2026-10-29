@@ -14,6 +14,8 @@ from ngome.auth.providers import build_email_sender
 from ngome.core.config import Settings, get_settings
 from ngome.core.logging import configure_logging, get_logger
 from ngome.db.session import create_engine, create_sessionmaker
+from ngome.integrity import router as integrity_router
+from ngome.integrity.apple import build_app_attest_policy, load_root_ca
 from ngome.integrity.play import build_integrity_verifier
 from ngome.vault import router as vault_router
 from ngome.vault.storage import build_blob_store
@@ -55,6 +57,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.email_sender = build_email_sender(settings)
     app.state.google_verifier = build_google_verifier(settings)
     app.state.integrity_verifier = build_integrity_verifier(settings)
+    app.state.app_attest_policy = build_app_attest_policy(settings)
+    app.state.app_attest_root = load_root_ca()
 
     @app.middleware("http")
     async def access_log(
@@ -75,4 +79,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_router.router)
     app.include_router(account.router)
     app.include_router(vault_router.router)
+    app.include_router(integrity_router.router)
     return app

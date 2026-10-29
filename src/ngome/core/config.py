@@ -62,7 +62,14 @@ class Settings(BaseSettings):
         Literal["MEETS_BASIC_INTEGRITY", "MEETS_DEVICE_INTEGRITY", "MEETS_STRONG_INTEGRITY"] | None
     ) = None
     play_integrity_max_token_age_seconds: int | None = Field(default=None, ge=10, le=3600)
-    # Uploads without a token: F-Droid builds, and play builds that could not attest.
+    # Apple App Attest (iPhone builds). ``app_attest_app_id`` is the Apple team id and bundle
+    # id, such as ``ABCDE12345.com.pesaclarity.app``; ``development`` accepts keys from Xcode
+    # builds, ``production`` from TestFlight and App Store builds.
+    app_attest_enabled: bool = False
+    app_attest_app_id: str | None = Field(default=None, pattern=r"^[A-Z0-9]{10}\.[A-Za-z0-9.-]+$")
+    app_attest_environment: Literal["production", "development"] | None = None
+    app_attest_challenge_seconds: int = Field(default=300, ge=30, le=3600)
+    # Uploads without a token or assertion: F-Droid builds, and builds that could not attest.
     vault_unattested_uploads: Literal["allow", "reject"] | None = None
 
     vault_max_backup_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
@@ -156,6 +163,22 @@ class Settings(BaseSettings):
             ]
             if missing:
                 raise ValueError(f"{', '.join(missing)} required when Play Integrity is enabled")
+        return self
+
+    @model_validator(mode="after")
+    def _check_app_attest(self) -> Self:
+        if self.app_attest_enabled:
+            missing = [
+                name
+                for name in (
+                    "app_attest_app_id",
+                    "app_attest_environment",
+                    "vault_unattested_uploads",
+                )
+                if getattr(self, name) is None
+            ]
+            if missing:
+                raise ValueError(f"{', '.join(missing)} required when App Attest is enabled")
         return self
 
 

@@ -30,6 +30,7 @@ from ngome.core.security import (
     new_refresh_token,
     utcnow,
 )
+from ngome.integrity import service as integrity_service
 from ngome.vault import service as vault_service
 
 log = get_logger(__name__)
@@ -264,6 +265,7 @@ async def delete_account(session: AsyncSession, account_id: uuid.UUID) -> None:
     device_ids = select(Device.id).where(Device.account_id == account_id)
     await session.execute(delete(RefreshToken).where(RefreshToken.device_id.in_(device_ids)))
     await vault_service.queue_account_deletions(session, account_id)
+    await integrity_service.delete_account_keys(session, account_id)
     await session.execute(delete(AuthEvent).where(AuthEvent.account_id == account_id))
     await session.execute(delete(Device).where(Device.account_id == account_id))
     await session.execute(
