@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ngome.api.deps import (
     BlobStoreDep,
@@ -15,6 +16,8 @@ from ngome.api.deps import (
 )
 from ngome.core.config import Settings
 from ngome.core.logging import get_logger
+from ngome.integrity import service as integrity_service
+from ngome.integrity.apple import AppAttestPolicy
 from ngome.integrity.play import (
     IntegrityFailedError,
     IntegrityUnavailableError,
@@ -39,12 +42,29 @@ _MAX_INTEGRITY_TOKEN = 16 * 1024
 async def _check_integrity(
     settings: Settings,
     verifier: IntegrityVerifier,
+    apple: AppAttestPolicy | None,
+    session: AsyncSession,
+    account_id: uuid.UUID,
     token: str | None,
     sha256_hex: str | None,
 ) -> None:
-    """Apply the Play Integrity policy to an upload before its body is read."""
-    if not verifier.enabled:
+    """Apply the integrity policy to an upload before its body is read.
+
+    Play builds send a Play Integrity token; iPhone builds send an App Attest assertion
+    (``appattest <key id> <assertion>``). A proof whose check is switched off counts as none.
+    """
+    if not verifier.enabled and apple is None:
         return
+    assertion = None
+    if token is not None:
+        try:
+            assertion = integrity_service.parse_header(token)
+        except IntegrityFailedError:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "This install could not be verified"
+            ) from None
+        if not (apple is not None if assertion is not None else verifier.enabled):
+            token = None
     if token is None:
         if settings.vault_unattested_uploads == "reject":
             log.info("integrity.unattested_rejected")
@@ -56,8 +76,15 @@ async def _check_integrity(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"Send X-Content-SHA256 with {_INTEGRITY_HEADER}",
         )
+    request_hash = request_hash_of_sha256_hex(sha256_hex)
     try:
-        await verifier.verify(token, request_hash_of_sha256_hex(sha256_hex))
+        if assertion is not None and apple is not None:
+            key_id, signed = assertion
+            await integrity_service.check_assertion(
+                session, account_id, key_id, signed, request_hash, apple
+            )
+        else:
+            await verifier.verify(token, request_hash)
     except IntegrityFailedError as exc:
         log.info("integrity.failed", reason=exc.reason)
         raise HTTPException(
@@ -107,11 +134,20 @@ async def upload(
 
     Send ``X-Content-SHA256`` (hex) to have the server reject a body corrupted in transit.
     Play builds also send ``X-Pesaclarity-Integrity``, a Play Integrity token bound to that
-    hash; the checksum check then ties the token to the stored bytes.
+    hash, and iPhone builds an App Attest assertion over it; the checksum check then ties the
+    proof to the stored bytes.
     """
     if content_type is None or content_type.split(";")[0].strip() != _OCTET_STREAM:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, f"Send {_OCTET_STREAM}")
-    await _check_integrity(settings, integrity, x_pesaclarity_integrity, x_content_sha256)
+    await _check_integrity(
+        settings,
+        integrity,
+        request.app.state.app_attest_policy,
+        session,
+        principal.account_id,
+        x_pesaclarity_integrity,
+        x_content_sha256,
+    )
     declared = request.headers.get("content-length")
     if (
         declared is not None

@@ -9,6 +9,7 @@ dependencies = [
     "aiobotocore>=3.10.0",
     "alembic>=1.20.1",
     "asyncpg>=0.32.0",
+    "cbor2>=6.1.5",
     "email-validator>=2.2",
     "fastapi>=0.162.0",
     "httpx>=0.28.1",
