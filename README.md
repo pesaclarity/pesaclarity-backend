@@ -1,10 +1,10 @@
 # pesaclarity-backend
 
-The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free Android app that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has three narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, and combine clipped, noised federated model updates under secure aggregation.
+The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free Android app (with an iPhone version in the works) that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has three narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, and combine clipped, noised federated model updates under secure aggregation.
 
 **Codename:** ngome, Swahili for "fortress".
 
-**Status:** pre-alpha. The API may change without notice before 1.0.
+**Status:** pre-alpha, not deployed yet; `tool/deploy_cloud_run.sh` or the Cloud Run workflow deploys it. The API may change without notice before 1.0.
 
 The product spec and brand live in [pesaclarity/docs](https://github.com/pesaclarity/docs); see "Architecture, privacy and data model" and "Federated learning and model licensing".
 
@@ -269,6 +269,19 @@ POOL_ID=<workload identity pool> PROVIDER_ID=<pool provider>
      --uri "https://run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/$PURGE_JOB:run" \
      --http-method POST --oauth-service-account-email "$SCHEDULER"
    ```
+
+### Deploying without GitHub Actions
+
+`tool/deploy_cloud_run.sh` runs the same steps from your machine or Cloud Shell, with the image built by Cloud Build, so it needs no Actions minutes and no local Docker. After the one-time setup above (step 5 is not needed, and `cloudbuild.googleapis.com` must be enabled):
+
+```sh
+gcloud auth login && gcloud services enable cloudbuild.googleapis.com
+cp deploy.env.example deploy.env          # fill in; git-ignored
+$EDITOR cloud-run.env.yaml                # the CLOUD_RUN_ENV_YAML settings; git-ignored
+tool/deploy_cloud_run.sh
+```
+
+It prints the service address once `/health/ready` answers. With `APP_API_URL_SECRET` set, it also stores the address in that Secret Manager secret, for the app's release build to read (see the app's RELEASING.md).
 
 The Flower aggregation server is not deployed yet; when it is, it can run as a separate Cloud Run service, which carries gRPC.
 
