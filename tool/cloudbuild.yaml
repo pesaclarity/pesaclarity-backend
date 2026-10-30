@@ -1,0 +1,7 @@
+# Builds the server image on Cloud Build for tool/deploy_cloud_run.sh.
+# BuildKit is needed for the Dockerfile's cache mounts.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
+    args: ["build", "--tag", "${_IMAGE}", "."]
+images: ["${_IMAGE}"]

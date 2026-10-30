@@ -15,3 +15,7 @@ htmlcov/
 .vscode/
 .DS_Store
 var/
+
+# Local deploy settings
+deploy.env
+cloud-run.env.yaml

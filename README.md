@@ -270,6 +270,19 @@ POOL_ID=<workload identity pool> PROVIDER_ID=<pool provider>
      --http-method POST --oauth-service-account-email "$SCHEDULER"
    ```
 
+### Deploying without GitHub Actions
+
+`tool/deploy_cloud_run.sh` runs the same steps from your machine or Cloud Shell, with the image built by Cloud Build, so it needs no Actions minutes and no local Docker. After the one-time setup above (step 5 is not needed, and `cloudbuild.googleapis.com` must be enabled):
+
+```sh
+gcloud auth login && gcloud services enable cloudbuild.googleapis.com
+cp deploy.env.example deploy.env          # fill in; git-ignored
+$EDITOR cloud-run.env.yaml                # the CLOUD_RUN_ENV_YAML settings; git-ignored
+tool/deploy_cloud_run.sh
+```
+
+It prints the service address once `/health/ready` answers. With `APP_API_URL_SECRET` set, it also stores the address in that Secret Manager secret, for the app's release build to read (see the app's RELEASING.md).
+
 The Flower aggregation server is not deployed yet; when it is, it can run as a separate Cloud Run service, which carries gRPC.
 
 ## Project layout
