@@ -1,6 +1,6 @@
 # 0002 — GitHub's production environment holds the settings
 
-**Status:** Draft
+**Status:** Implemented
 **Date:** 2026-11-02
 
 Builds on [0001](0001-settings-live-on-cloud-run.md). The Cloud Run service still holds the running settings, and deploys (Cloud Run's auto-deploy trigger on `main`) still only swap the image. What changes is where the values are managed: in GitHub, pushed to Cloud Run by a workflow.
@@ -29,7 +29,7 @@ Non-goals
 
 1. Runs in the `production` environment, signing in to Google Cloud without a stored key (workload identity federation) as a deploy account. That account trusts only this repository's `production` environment.
 2. **Checks first.** The server's own `Settings()` validation runs on the GitHub values (`uv sync`, then a short Python check). A bad value, such as `NGOME_SMTP_PORT=abc` or a missing secret, fails the run before anything changes.
-3. Runs `tool/sync_settings.sh`, which reads the values from two files made from `toJSON(vars)` and `toJSON(secrets)`. Both files are written to `RUNNER_TEMP` with mode 0600, and values are never echoed (GitHub also masks secrets in logs). The script then:
+3. Runs `tool/sync_settings.sh`, which reads the values from two files. One comes from `toJSON(vars)`. The other comes from the six secret settings the server has, each named in the workflow, with unset ones left out. (`toJSON(secrets)` was tried first: GitHub held those runs for approval as potentially malicious, since a run that collects every secret looks like theft.) Both files are written to `RUNNER_TEMP` with mode 0600, and values are never echoed (GitHub also masks secrets in logs). The script then:
    - **Plain settings:** variables named `NGOME_*`, plus `FORWARDED_ALLOW_IPS`, become the env file.
    - **Secrets:** each `NGOME_*` secret maps to the Secret Manager secret `pesaclarity-` plus the name without `NGOME_`, lowercased, with `_` turned into `-`. That matches the four that exist. A missing secret is created. An existing one gets a new version only when the value differs.
    - **Contact pepper:** if `NGOME_CONTACT_PEPPER` differs from Secret Manager, the run fails and nothing is applied. Changing it would orphan every account.

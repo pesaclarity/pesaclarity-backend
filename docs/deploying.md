@@ -45,6 +45,10 @@ Merge to `main` (README, "Branches and releases"). To watch the build: `gcloud b
    - A secret gets a new Secret Manager version only when its value changed.
    - Removing a variable or secret in GitHub removes it from Cloud Run on the next sync.
 
+The workflow names each secret it reads: the six secret settings the server has (database URL, JWT secret, contact pepper, SMTP password and the two R2 keys). A new secret setting has to be added to `.github/workflows/sync-settings.yml` as well.
+
+GitHub may hold a Sync settings run for approval when it flags a workflow as potentially malicious. Approve the run on its page in the Actions tab, signed in with write access.
+
 **Never change `NGOME_CONTACT_PEPPER`.** It keys every account, and the sync refuses to apply a new value. If a run fails on it, put the original value back: `gcloud secrets versions access 1 --secret <pepper secret>`.
 
 ### When a change adds a migration

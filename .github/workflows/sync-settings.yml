@@ -33,15 +33,23 @@ jobs:
         with:
           enable-cache: true
 
+      # Every secret setting the server has (the SecretStr fields and the database
+      # URL in src/ngome/core/config.py), named one by one; unset ones are left out.
       # Files readable by this job only; GitHub also masks every secret in the log.
       - name: Collect the settings
         env:
           VARS_JSON: ${{ toJSON(vars) }}
-          SECRETS_JSON: ${{ toJSON(secrets) }}
+          NGOME_DATABASE_URL: ${{ secrets.NGOME_DATABASE_URL }}
+          NGOME_JWT_SECRET: ${{ secrets.NGOME_JWT_SECRET }}
+          NGOME_CONTACT_PEPPER: ${{ secrets.NGOME_CONTACT_PEPPER }}
+          NGOME_SMTP_PASSWORD: ${{ secrets.NGOME_SMTP_PASSWORD }}
+          NGOME_VAULT_S3_ACCESS_KEY_ID: ${{ secrets.NGOME_VAULT_S3_ACCESS_KEY_ID }}
+          NGOME_VAULT_S3_SECRET_ACCESS_KEY: ${{ secrets.NGOME_VAULT_S3_SECRET_ACCESS_KEY }}
         run: |
           umask 077
           printf '%s' "$VARS_JSON" > "$RUNNER_TEMP/vars.json"
-          printf '%s' "$SECRETS_JSON" > "$RUNNER_TEMP/secrets.json"
+          jq -n 'env | with_entries(select((.key | startswith("NGOME_")) and .value != ""))' \
+            > "$RUNNER_TEMP/secrets.json"
 
       # The server's own validation, before anything changes on Cloud Run. Errors
       # name the setting, never its value.
