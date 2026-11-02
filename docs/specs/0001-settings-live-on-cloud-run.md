@@ -1,7 +1,9 @@
 # 0001 — Settings live on the Cloud Run service
 
-**Status:** Draft
+**Status:** Implemented, then amended
 **Date:** 2026-11-02
+
+> **As built.** Production deploys turned out to be Cloud Run's auto-deploy (a Cloud Build trigger on `main` that swaps only the image) rather than this script or workflow. The GitHub workflow is disabled. Settings are on the service as designed, and `tool/cloud_run_settings.sh` copies them onto the jobs. [0002](0002-github-holds-settings.md) moves where the values are managed to GitHub. The script and workflow changes below still stand for anyone deploying that way.
 
 ## Problem
 

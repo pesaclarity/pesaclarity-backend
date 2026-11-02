@@ -1,0 +1,83 @@
+name: Sync settings
+
+# Applies the settings kept in this repository's production environment to Cloud
+# Run (docs/specs/0002, docs/deploying.md): secrets go to Secret Manager, and the
+# service and its two jobs get every setting. Run it from the Actions tab after
+# changing a setting. Edits made on Cloud Run directly are replaced.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # keyless sign-in to Google Cloud
+
+concurrency:
+  group: sync-settings
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Check and apply
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      CLOUD_RUN_MIGRATE_JOB: ${{ vars.CLOUD_RUN_MIGRATE_JOB }}
+      CLOUD_RUN_PURGE_JOB: ${{ vars.CLOUD_RUN_PURGE_JOB }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # Files readable by this job only; GitHub also masks every secret in the log.
+      - name: Collect the settings
+        env:
+          VARS_JSON: ${{ toJSON(vars) }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          umask 077
+          printf '%s' "$VARS_JSON" > "$RUNNER_TEMP/vars.json"
+          printf '%s' "$SECRETS_JSON" > "$RUNNER_TEMP/secrets.json"
+
+      # The server's own validation, before anything changes on Cloud Run. Errors
+      # name the setting, never its value.
+      - name: Check the settings
+        run: |
+          uv run --frozen --no-dev python - "$RUNNER_TEMP/vars.json" "$RUNNER_TEMP/secrets.json" <<'EOF'
+          import json, os, sys
+
+          from pydantic import ValidationError
+
+          for path in sys.argv[1:]:
+              with open(path) as f:
+                  os.environ.update({k: v for k, v in json.load(f).items() if k.startswith("NGOME_")})
+
+          from ngome.auth.providers import build_email_sender
+          from ngome.core.config import Settings
+
+          try:
+              build_email_sender(Settings(_env_file=None))
+          except ValidationError as exc:
+              for error in exc.errors(include_input=False, include_url=False):
+                  where = ".".join(str(part) for part in error["loc"]) or "settings"
+                  print(f"::error::{where}: {error['msg']}")
+              sys.exit(1)
+          except ValueError as exc:
+              print(f"::error::{exc}")
+              sys.exit(1)
+          print("Settings are valid.")
+          EOF
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Apply to Cloud Run
+        run: tool/sync_settings.sh "$RUNNER_TEMP/vars.json" "$RUNNER_TEMP/secrets.json"
