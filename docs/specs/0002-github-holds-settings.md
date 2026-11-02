@@ -40,6 +40,7 @@ Non-goals
 
 - `roles/run.developer` on the project: update the service and jobs.
 - `roles/secretmanager.admin` on the project: create secrets for new settings, and read current values to compare.
+- `roles/artifactregistry.reader` on the project: Cloud Run refuses a service update from an account that can't read the service's image.
 - `roles/iam.serviceAccountUser` on the runtime account only.
 - `roles/iam.workloadIdentityUser` for this repository, with a provider condition requiring `repository == pesaclarity/pesaclarity-backend` and `environment == production`.
 

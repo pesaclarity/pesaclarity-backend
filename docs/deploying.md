@@ -131,7 +131,8 @@ gcloud iam workload-identity-pools providers create-oidc pesaclarity-backend --l
 gcloud iam service-accounts create "${DEPLOY%%@*}" --display-name "Pesa Clarity settings sync"
 gcloud iam service-accounts add-iam-policy-binding "$DEPLOY" --role roles/iam.workloadIdentityUser \
   --member "principalSet://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/github/attribute.repository/$REPO"
-for role in roles/run.developer roles/secretmanager.admin; do
+# artifactregistry.reader: Cloud Run checks that whoever updates the service can read its image.
+for role in roles/run.developer roles/secretmanager.admin roles/artifactregistry.reader; do
   gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" --condition=None --member "serviceAccount:$DEPLOY" --role "$role"
 done
 gcloud iam service-accounts add-iam-policy-binding "$RUNTIME" --role roles/iam.serviceAccountUser \
