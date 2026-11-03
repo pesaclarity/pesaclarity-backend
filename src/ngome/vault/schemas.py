@@ -10,4 +10,5 @@ class BackupOut(BaseModel):
     id: uuid.UUID
     size_bytes: int
     sha256: str
+    space: str
     created_at: datetime

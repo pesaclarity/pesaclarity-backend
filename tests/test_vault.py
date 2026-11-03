@@ -32,7 +32,8 @@ async def test_upload_list_download_delete(client: httpx.AsyncClient, mail: Fake
     meta = created.json()
     assert meta["size_bytes"] == len(blob)
     assert meta["sha256"] == digest
-    assert set(meta) == {"id", "size_bytes", "sha256", "created_at"}
+    assert set(meta) == {"id", "size_bytes", "sha256", "space", "created_at"}
+    assert meta["space"] == "personal"
 
     listed = await client.get("/v1/vault/backups", headers=auth)
     assert [b["id"] for b in listed.json()] == [meta["id"]]
@@ -111,6 +112,45 @@ async def test_keeps_only_the_newest_backups(client: httpx.AsyncClient, mail: Fa
 
     listed = await client.get("/v1/vault/backups", headers=auth)
     assert [b["id"] for b in listed.json()] == list(reversed(ids[-3:]))
+
+
+async def test_each_space_keeps_its_own_newest_backups(
+    client: httpx.AsyncClient, mail: FakeMail
+) -> None:
+    auth = bearer(await sign_in(client, mail))
+    personal = []
+    for _ in range(3):
+        created = await client.post(
+            "/v1/vault/backups", content=ciphertext(), headers={**auth, **OCTET}
+        )
+        assert created.json()["space"] == "personal"
+        personal.append(created.json()["id"])
+    stall = []
+    for _ in range(4):
+        created = await client.post(
+            "/v1/vault/backups",
+            content=ciphertext(),
+            headers={**auth, **OCTET, "X-Backup-Space": "abc123"},
+        )
+        assert created.json()["space"] == "abc123"
+        stall.append(created.json()["id"])
+
+    listed = (await client.get("/v1/vault/backups", headers=auth)).json()
+    ids = {b["id"] for b in listed}
+    # A business's backups never push out Personal's.
+    assert set(personal) <= ids
+    assert set(stall[-3:]) <= ids
+    assert stall[0] not in ids
+
+
+async def test_a_bad_space_name_is_refused(client: httpx.AsyncClient, mail: FakeMail) -> None:
+    auth = bearer(await sign_in(client, mail))
+    response = await client.post(
+        "/v1/vault/backups",
+        content=ciphertext(),
+        headers={**auth, **OCTET, "X-Backup-Space": "Not OK!"},
+    )
+    assert response.status_code == 422
 
 
 async def test_download_streams_the_whole_backup(client: httpx.AsyncClient, mail: FakeMail) -> None:
