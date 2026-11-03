@@ -5,11 +5,11 @@ import uuid
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import Any
 
-from sqlalchemy import ColumnElement, delete, func, select, update
+from sqlalchemy import ColumnElement, case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ngome.core.logging import get_logger
-from ngome.vault.models import Backup, BlobDeletion
+from ngome.vault.models import DEFAULT_SPACE, Backup, BlobDeletion
 from ngome.vault.storage import BlobStore, new_object_key
 
 log = get_logger(__name__)
@@ -72,8 +72,10 @@ async def store_backup(
     expected_sha256: str | None,
     keep: int,
     quota_bytes: int,
+    space: str = DEFAULT_SPACE,
 ) -> Backup:
-    """Stream a backup into the blob store, record it, and prune the oldest beyond ``keep``.
+    """Stream a backup into the blob store, record it, and prune that space's oldest beyond
+    ``keep``.
 
     The object is written before its metadata, so a backup is never listed without its bytes.
     ``quota_bytes`` caps what the account holds once pruning is done: the new backup plus the
@@ -82,7 +84,9 @@ async def store_backup(
     """
     key = new_object_key()
     meter = _Meter(
-        chunks, max_bytes, quota_bytes - await _retained_bytes(session, account_id, keep)
+        chunks,
+        max_bytes,
+        quota_bytes - await _retained_bytes(session, account_id, keep, space),
     )
     await store.put(key, meter)
 
@@ -97,13 +101,19 @@ async def store_backup(
         raise rejection
 
     try:
-        backup = Backup(account_id=account_id, object_key=key, size_bytes=meter.size, sha256=digest)
+        backup = Backup(
+            account_id=account_id,
+            object_key=key,
+            size_bytes=meter.size,
+            sha256=digest,
+            space=space,
+        )
         session.add(backup)
         await session.flush()
         stale_ids = list(
             await session.scalars(
                 select(Backup.id)
-                .where(Backup.account_id == account_id)
+                .where(Backup.account_id == account_id, Backup.space == space)
                 .order_by(Backup.created_at.desc(), Backup.id.desc())
                 .offset(keep)
             )
@@ -126,16 +136,28 @@ async def store_backup(
     return backup
 
 
-async def _retained_bytes(session: AsyncSession, account_id: uuid.UUID, keep: int) -> int:
-    """Bytes held by the backups that survive pruning once one more is stored."""
-    newest = (
-        select(Backup.size_bytes)
+async def _retained_bytes(
+    session: AsyncSession, account_id: uuid.UUID, keep: int, space: str
+) -> int:
+    """Bytes held by the backups that survive pruning once one more is stored in ``space``:
+    its ``keep - 1`` newest, and every other space's ``keep`` newest."""
+    rank = (
+        func.row_number()
+        .over(
+            partition_by=Backup.space,
+            order_by=(Backup.created_at.desc(), Backup.id.desc()),
+        )
+        .label("rank")
+    )
+    ranked = (
+        select(Backup.space, Backup.size_bytes, rank)
         .where(Backup.account_id == account_id)
-        .order_by(Backup.created_at.desc(), Backup.id.desc())
-        .limit(keep - 1)
         .subquery()
     )
-    total = await session.scalar(select(func.coalesce(func.sum(newest.c.size_bytes), 0)))
+    kept = case((ranked.c.space == space, keep - 1), else_=keep)
+    total = await session.scalar(
+        select(func.coalesce(func.sum(ranked.c.size_bytes), 0)).where(ranked.c.rank <= kept)
+    )
     # Release the read transaction so it is not held open while the upload streams.
     await session.commit()
     return int(total or 0)

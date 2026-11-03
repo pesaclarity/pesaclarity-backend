@@ -10,6 +10,8 @@ from ngome.core.security import utcnow
 from ngome.db.base import Base, UTCDateTime
 
 OBJECT_KEY_LENGTH = 128
+SPACE_LENGTH = 32
+DEFAULT_SPACE = "personal"
 
 
 class Backup(Base):
@@ -25,6 +27,11 @@ class Backup(Base):
     object_key: Mapped[str] = mapped_column(String(OBJECT_KEY_LENGTH), unique=True)
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
+    # Which of the phone's spaces this is a copy of, such as "personal" or a business. Each
+    # space keeps its own newest backups.
+    space: Mapped[str] = mapped_column(
+        String(SPACE_LENGTH), default=DEFAULT_SPACE, server_default=DEFAULT_SPACE
+    )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
