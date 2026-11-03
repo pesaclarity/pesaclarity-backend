@@ -25,7 +25,7 @@ from ngome.integrity.play import (
     request_hash_of_sha256_hex,
 )
 from ngome.vault import service
-from ngome.vault.models import Backup
+from ngome.vault.models import DEFAULT_SPACE, Backup
 from ngome.vault.schemas import BackupOut
 from ngome.vault.storage import BlobNotFoundError
 
@@ -105,6 +105,7 @@ def _out(backup: Backup) -> BackupOut:
         id=backup.id,
         size_bytes=backup.size_bytes,
         sha256=backup.sha256,
+        space=backup.space,
         created_at=backup.created_at,
     )
 
@@ -129,6 +130,7 @@ async def upload(
     content_type: Annotated[str | None, Header()] = None,
     x_content_sha256: Annotated[str | None, Header(pattern=r"^[0-9a-fA-F]{64}$")] = None,
     x_pesaclarity_integrity: Annotated[str | None, Header(max_length=_MAX_INTEGRITY_TOKEN)] = None,
+    x_backup_space: Annotated[str | None, Header(pattern=r"^[a-z0-9]{1,32}$")] = None,
 ) -> BackupOut:
     """Store a backup that the phone has already encrypted.
 
@@ -136,6 +138,9 @@ async def upload(
     Play builds also send ``X-Pesaclarity-Integrity``, a Play Integrity token bound to that
     hash, and iPhone builds an App Attest assertion over it; the checksum check then ties the
     proof to the stored bytes.
+
+    ``X-Backup-Space`` names which of the phone's spaces this is a copy of (default
+    ``personal``); each space keeps its own newest backups.
     """
     if content_type is None or content_type.split(";")[0].strip() != _OCTET_STREAM:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, f"Send {_OCTET_STREAM}")
@@ -165,6 +170,7 @@ async def upload(
             expected_sha256=x_content_sha256,
             keep=settings.vault_keep_backups,
             quota_bytes=settings.vault_max_account_bytes,
+            space=x_backup_space or DEFAULT_SPACE,
         )
     except service.BackupTooLargeError:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Backup is too large") from None

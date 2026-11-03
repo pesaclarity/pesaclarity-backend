@@ -32,7 +32,8 @@ from tests.conftest import OTHER_EMAIL, FakeMail, bearer, make_settings, sign_in
 
 APP_ID = "ABCDE12345.com.pesaclarity.app"
 POLICY = AppAttestPolicy(app_id=APP_ID, environment="production")
-NOW = datetime(2026, 10, 29, 12, tzinfo=UTC)
+# The real time, so the test certificates stay valid for requests that check against it.
+NOW = datetime.now(UTC).replace(microsecond=0)
 OCTET = {"Content-Type": "application/octet-stream"}
 
 
