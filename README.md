@@ -320,6 +320,13 @@ CI also runs those against MinIO, applies the migrations to Postgres, checks the
 
 Named `TODO` markers in the code cover loading and publishing the federated model. Play Integrity checks on federated updates come with the Flower deployment.
 
+## Get involved
+
+- **Star [the app](https://github.com/pesaclarity/pesaclarity-app)** so more people find a private money app that runs on their phone.
+- Python and FastAPI help is welcome: deployment, retention jobs, and federated learning (see the open issues).
+- **Pick a first issue:** [good first issues](https://github.com/pesaclarity/pesaclarity-backend/issues?q=is%3Aopen+label%3A%22good+first+issue%22) or [help wanted](https://github.com/pesaclarity/pesaclarity-backend/issues?q=is%3Aopen+label%3A%22help+wanted%22).
+- **Read [CONTRIBUTING.md](CONTRIBUTING.md)** before your first pull request. Never include real messages, statements or phone numbers.
+
 ## Licence
 
 AGPL-3.0; see [LICENSE](LICENSE). If you run a modified version as a network service, you must offer its source to its users. A commercial licence is available on request for organisations that cannot accept the AGPL. The Pesa Clarity name and logo are trademarks and are not covered by the code licence.
