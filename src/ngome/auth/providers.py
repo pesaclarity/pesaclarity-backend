@@ -13,9 +13,18 @@ from ngome.core.logging import get_logger
 log = get_logger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class Attachment:
+    filename: str
+    content_type: str
+    data: bytes
+
+
 class EmailSender(Protocol):
-    async def send(self, to: str, subject: str, text: str) -> None:
-        """Deliver a plain-text email to ``to`` or raise."""
+    async def send(
+        self, to: str, subject: str, text: str, attachments: tuple[Attachment, ...] = ()
+    ) -> None:
+        """Deliver a plain-text email, with any [attachments], to ``to`` or raise."""
         ...
 
 
@@ -25,9 +34,12 @@ class ConsoleEmailSender:
     Settings validation refuses this provider in production.
     """
 
-    async def send(self, to: str, subject: str, text: str) -> None:
+    async def send(
+        self, to: str, subject: str, text: str, attachments: tuple[Attachment, ...] = ()
+    ) -> None:
         # Printed, not logged, so the code never reaches log storage.
-        print(f"[dev email to {to[:1]}...] {subject}\n{text}", flush=True)  # noqa: T201
+        names = ", ".join(a.filename for a in attachments)
+        print(f"[dev email to {to[:1]}...] {subject}\n{text}\n[{names}]", flush=True)  # noqa: T201
 
 
 class SmtpEmailSender:
@@ -48,12 +60,19 @@ class SmtpEmailSender:
         self._sender = settings.email_from
         self._timeout = settings.smtp_timeout_seconds
 
-    async def send(self, to: str, subject: str, text: str) -> None:
+    async def send(
+        self, to: str, subject: str, text: str, attachments: tuple[Attachment, ...] = ()
+    ) -> None:
         message = EmailMessage()
         message["From"] = self._sender
         message["To"] = to
         message["Subject"] = subject
         message.set_content(text)
+        for attachment in attachments:
+            maintype, subtype = attachment.content_type.split("/", 1)
+            message.add_attachment(
+                attachment.data, maintype=maintype, subtype=subtype, filename=attachment.filename
+            )
         await asyncio.to_thread(self._deliver, message)
 
     def _deliver(self, message: EmailMessage) -> None:

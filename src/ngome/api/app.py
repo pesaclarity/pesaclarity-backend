@@ -17,6 +17,7 @@ from ngome.db.session import create_engine, create_sessionmaker
 from ngome.integrity import router as integrity_router
 from ngome.integrity.apple import build_app_attest_policy, load_root_ca
 from ngome.integrity.play import build_integrity_verifier
+from ngome.privacy import router as privacy_router
 from ngome.vault import router as vault_router
 from ngome.vault.storage import build_blob_store
 
@@ -80,4 +81,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(account.router)
     app.include_router(vault_router.router)
     app.include_router(integrity_router.router)
+    app.include_router(privacy_router.router)
     return app

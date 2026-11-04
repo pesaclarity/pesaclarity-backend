@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     smtp_password: SecretStr | None = None
     smtp_timeout_seconds: float | None = Field(default=None, gt=0, le=60)
 
+    # Emailing a copy of the privacy policy. Only text whose SHA-256 is listed is sent, so the
+    # endpoint can never be used to mail anything else. Empty turns the feature off.
+    privacy_policy_sha256: list[str] = Field(default_factory=list)
+    privacy_copy_subject: str = "Your copy of the Pesa Clarity privacy policy"
+    privacy_copy_max_per_day: int = Field(default=3, ge=1, le=20)
+    privacy_policy_max_bytes: int = Field(default=200_000, ge=1_000, le=2_000_000)
+
     google_sign_in_enabled: bool = False
     google_client_ids: list[str] = Field(default_factory=list)
     google_token_leeway_seconds: int = Field(default=60, ge=0, le=300)

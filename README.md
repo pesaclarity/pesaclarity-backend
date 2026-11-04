@@ -46,6 +46,7 @@ To run everything in containers instead: `docker compose up --build`.
 | `GET /v1/auth/devices`, `DELETE /v1/auth/devices/{id}` | Device list and remote sign-out |
 | `GET /v1/account`, `DELETE /v1/account` | What we hold, and immediate deletion of all of it |
 | `POST /v1/vault/backups` | Upload ciphertext (`application/octet-stream`, optional `X-Content-SHA256`, optional `X-Backup-Space` naming which of the phone's spaces it copies; each space keeps its own newest `NGOME_VAULT_KEEP_BACKUPS`) |
+| `POST /v1/privacy/copy` | Email the signed-in person a copy of the privacy policy, as text and a PDF. The address is used once and never stored or logged. Only text whose SHA-256 is in `NGOME_PRIVACY_POLICY_SHA256` is sent, at most `NGOME_PRIVACY_COPY_MAX_PER_DAY` copies a day per account. Get the digest with `sha256sum assets/policy/privacy_policy.md` in pesaclarity-app. |
 | `GET /v1/vault/backups`, `GET` / `DELETE /v1/vault/backups/{id}` | List, download and delete backups |
 
 Access tokens last 10 minutes; refresh tokens rotate on every use and expire after 30 days. The vault keeps the newest 10 backups per account, up to 256 MiB in total.
