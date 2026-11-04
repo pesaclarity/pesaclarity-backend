@@ -3,6 +3,7 @@
 from ngome.auth.models import Account, AuthEvent, Device, OtpChallenge, RefreshToken
 from ngome.db.base import Base
 from ngome.integrity.models import AppAttestChallenge, AppAttestKey
+from ngome.privacy.models import PolicyCopy
 from ngome.vault.models import Backup, BlobDeletion, StoredBlob
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "BlobDeletion",
     "Device",
     "OtpChallenge",
+    "PolicyCopy",
     "RefreshToken",
     "StoredBlob",
 ]
