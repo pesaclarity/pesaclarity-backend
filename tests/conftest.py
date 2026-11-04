@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from pydantic import SecretStr
 
 from ngome.api.app import create_app
-from ngome.auth.providers import GoogleIdentity, InvalidGoogleTokenError
+from ngome.auth.providers import Attachment, GoogleIdentity, InvalidGoogleTokenError
 from ngome.core.config import Settings
 from ngome.db.models import Base
 from ngome.vault.storage import BlobNotFoundError, BlobStore, FilesystemBlobStore
@@ -22,8 +22,13 @@ OTHER_EMAIL = "otieno@example.com"
 class FakeMail:
     sent: list[tuple[str, str]] = field(default_factory=list)
 
-    async def send(self, to: str, subject: str, text: str) -> None:
+    attachments: list[tuple[Attachment, ...]] = field(default_factory=list)
+
+    async def send(
+        self, to: str, subject: str, text: str, attachments: tuple[Attachment, ...] = ()
+    ) -> None:
         self.sent.append((to, text))
+        self.attachments.append(attachments)
 
     def last_code(self) -> str:
         return next(
