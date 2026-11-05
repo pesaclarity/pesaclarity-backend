@@ -208,6 +208,7 @@ After the first sync, Secret Manager holds the contact pepper as version 1. Keep
 | `NGOME_APP_ATTEST_ENABLED` | `false`, until there's an Apple team id. Then `true`, plus `NGOME_APP_ATTEST_APP_ID` (`<team id>.com.pesaclarity.app`) and `NGOME_APP_ATTEST_ENVIRONMENT` (`production`) |
 | `NGOME_VAULT_UNATTESTED_UPLOADS` | `allow`, because F-Droid builds can't attest |
 | `NGOME_VAULT_BLOB_STORE` | `postgres` until [R2](#adding-r2) |
+| `NGOME_PRIVACY_POLICY_SHA256` | The SHA-256 of each approved privacy policy, as a JSON list: `["<digest>"]`, where the digest is `sha256sum assets/policy/privacy_policy.md` in pesaclarity-app. Add each new version's digest when the app ships it, and keep older ones while older app versions are in use. Unset keeps the policy email off |
 | `FORWARDED_ALLOW_IPS` | `*` |
 
 Anything not listed keeps its default from `src/ngome/core/config.py`.
