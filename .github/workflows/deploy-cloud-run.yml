@@ -1,9 +1,5 @@
 name: Deploy to Cloud Run
 
-# Deploys main to Google Cloud Run once CI passes, or by hand from the Actions
-# tab. Every name, size and setting comes from repository variables and secrets
-# (see README, "Deploying to Cloud Run"); nothing has a built-in fallback. The
-# job is skipped until GCP_PROJECT_ID is set, and fails if any other is missing.
 on:
   workflow_run:
     workflows: [CI]
@@ -13,7 +9,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # keyless sign-in to Google Cloud
+  id-token: write
 
 concurrency:
   group: deploy-cloud-run
@@ -29,8 +25,6 @@ env:
   PURGE_JOB: ${{ vars.CLOUD_RUN_PURGE_JOB }}
   SERVICE_FLAGS: ${{ vars.CLOUD_RUN_SERVICE_FLAGS }}
   JOB_FLAGS: ${{ vars.CLOUD_RUN_JOB_FLAGS }}
-  SECRETS: ${{ vars.CLOUD_RUN_SECRETS }}
-  ENV_YAML: ${{ vars.CLOUD_RUN_ENV_YAML }}
 
 jobs:
   deploy:
@@ -49,7 +43,7 @@ jobs:
         run: |
           missing=""
           for name in PROJECT REGION IMAGE_REPO RUNTIME_SA SERVICE MIGRATE_JOB PURGE_JOB \
-            SERVICE_FLAGS JOB_FLAGS SECRETS ENV_YAML WIF_PROVIDER DEPLOY_SA; do
+            SERVICE_FLAGS JOB_FLAGS WIF_PROVIDER DEPLOY_SA; do
             [ -n "${!name}" ] || missing="$missing $name"
           done
           if [ -n "$missing" ]; then
@@ -68,6 +62,13 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      # Before the build, so a missing service fails fast.
+      - name: Read the service settings
+        id: settings
+        run: |
+          secrets="$(tool/cloud_run_settings.sh "$PROJECT" "$REGION" "$SERVICE" "$RUNNER_TEMP/env.json")"
+          echo "secrets=$secrets" >> "$GITHUB_OUTPUT"
+
       - name: Build and push the image
         id: image
         run: |
@@ -77,18 +78,16 @@ jobs:
           docker push "$image"
           echo "ref=$image" >> "$GITHUB_OUTPUT"
 
-      - name: Write the service settings
-        run: printf '%s\n' "$ENV_YAML" > "$RUNNER_TEMP/env.yaml"
-
       # Migrations run as a Cloud Run job first; the new revision goes live only if they pass.
       - name: Migrate the database
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
+          SECRETS: ${{ steps.settings.outputs.secrets }}
         run: |
           # shellcheck disable=SC2086 # the flags variable holds several flags
           gcloud run jobs deploy "$MIGRATE_JOB" --project "$PROJECT" --region "$REGION" \
             --image "$IMAGE" --command alembic --args upgrade,head \
-            --service-account "$RUNTIME_SA" --env-vars-file "$RUNNER_TEMP/env.yaml" \
+            --service-account "$RUNTIME_SA" --env-vars-file "$RUNNER_TEMP/env.json" \
             --set-secrets "$SECRETS" $JOB_FLAGS --quiet
           gcloud run jobs execute "$MIGRATE_JOB" --project "$PROJECT" --region "$REGION" --wait
 
@@ -96,21 +95,21 @@ jobs:
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
         run: |
+          # No env or secret flags: those would replace the settings on the service.
           # shellcheck disable=SC2086
           gcloud run deploy "$SERVICE" --project "$PROJECT" --region "$REGION" \
-            --image "$IMAGE" --service-account "$RUNTIME_SA" \
-            --env-vars-file "$RUNNER_TEMP/env.yaml" --set-secrets "$SECRETS" \
-            $SERVICE_FLAGS --quiet
+            --image "$IMAGE" --service-account "$RUNTIME_SA" $SERVICE_FLAGS --quiet
 
       # The daily retention purge runs the same image; Cloud Scheduler triggers it.
       - name: Update the purge job
         env:
           IMAGE: ${{ steps.image.outputs.ref }}
+          SECRETS: ${{ steps.settings.outputs.secrets }}
         run: |
           # shellcheck disable=SC2086
           gcloud run jobs deploy "$PURGE_JOB" --project "$PROJECT" --region "$REGION" \
             --image "$IMAGE" --command ngome-purge \
-            --service-account "$RUNTIME_SA" --env-vars-file "$RUNNER_TEMP/env.yaml" \
+            --service-account "$RUNTIME_SA" --env-vars-file "$RUNNER_TEMP/env.json" \
             --set-secrets "$SECRETS" $JOB_FLAGS --quiet
 
       - name: Check health
