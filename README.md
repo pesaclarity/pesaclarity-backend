@@ -255,6 +255,8 @@ POOL_ID=<workload identity pool> PROVIDER_ID=<pool provider>
    NGOME_APP_ATTEST_APP_ID: "<Apple team id>.com.pesaclarity.app"
    NGOME_APP_ATTEST_ENVIRONMENT: "<production or development>"
    NGOME_VAULT_UNATTESTED_UPLOADS: "<allow or reject>"
+   NGOME_PRIVACY_POLICY_SHA256: '["<sha256sum of each approved assets/policy/privacy_policy.md>"]'
+   NGOME_PRIVACY_COPY_MAX_PER_DAY: "<copies a day per account>"
    FORWARDED_ALLOW_IPS: "*"
    ```
 
