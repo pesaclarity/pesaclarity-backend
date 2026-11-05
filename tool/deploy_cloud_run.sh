@@ -3,12 +3,14 @@
 # GitHub Actions: the same steps as .github/workflows/deploy-cloud-run.yml, but
 # the image is built by Cloud Build, so no local Docker is needed.
 #
-# Settings come from an env file with the same names as the workflow's
+# Names come from an env file with the same names as the workflow's
 # repository variables (copy deploy.env.example to deploy.env; it is
-# git-ignored). Secrets stay in Secret Manager; the file only names them.
+# git-ignored). The server's settings live on the Cloud Run service (README,
+# "Settings on Cloud Run"): deploys keep them, and copy them onto the migrate
+# and purge jobs.
 #
 # Usage: tool/deploy_cloud_run.sh [env file]   (default: deploy.env)
-# Needs: gcloud, signed in with an account that may deploy (gcloud auth login).
+# Needs: gcloud, signed in with an account that may deploy (gcloud auth login), and jq.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -21,15 +23,19 @@ set +a
 
 missing=""
 for name in GCP_PROJECT_ID GCP_REGION GCP_IMAGE GCP_RUNTIME_SERVICE_ACCOUNT CLOUD_RUN_SERVICE \
-  CLOUD_RUN_MIGRATE_JOB CLOUD_RUN_PURGE_JOB CLOUD_RUN_SERVICE_FLAGS CLOUD_RUN_JOB_FLAGS \
-  CLOUD_RUN_SECRETS CLOUD_RUN_ENV_YAML_FILE; do
+  CLOUD_RUN_MIGRATE_JOB CLOUD_RUN_PURGE_JOB CLOUD_RUN_SERVICE_FLAGS CLOUD_RUN_JOB_FLAGS; do
   [ -n "${!name:-}" ] || missing="$missing $name"
 done
 [ -z "$missing" ] || { echo "Missing in $env_file:$missing" >&2; exit 1; }
-[ -f "$CLOUD_RUN_ENV_YAML_FILE" ] || { echo "No $CLOUD_RUN_ENV_YAML_FILE" >&2; exit 1; }
 
 project=(--project "$GCP_PROJECT_ID")
 where=("${project[@]}" --region "$GCP_REGION")
+
+# Read before building, so a missing service fails in seconds rather than after a build.
+settings_file="$(mktemp)"
+trap 'rm -f "$settings_file"' EXIT
+secrets="$(tool/cloud_run_settings.sh "$GCP_PROJECT_ID" "$GCP_REGION" "$CLOUD_RUN_SERVICE" "$settings_file")"
+
 tag="$(git rev-parse --short=12 HEAD)$(git diff --quiet && echo '' || echo '-dirty')"
 image="$GCP_IMAGE:$tag"
 
@@ -41,22 +47,20 @@ echo "Migrating the database..."
 # shellcheck disable=SC2086 # the flags variables hold several flags
 gcloud run jobs deploy "$CLOUD_RUN_MIGRATE_JOB" "${where[@]}" --image "$image" \
   --command alembic --args upgrade,head --service-account "$GCP_RUNTIME_SERVICE_ACCOUNT" \
-  --env-vars-file "$CLOUD_RUN_ENV_YAML_FILE" --set-secrets "$CLOUD_RUN_SECRETS" \
-  $CLOUD_RUN_JOB_FLAGS --quiet
+  --env-vars-file "$settings_file" --set-secrets "$secrets" $CLOUD_RUN_JOB_FLAGS --quiet
 gcloud run jobs execute "$CLOUD_RUN_MIGRATE_JOB" "${where[@]}" --wait
 
 echo "Releasing the API..."
+# No env or secret flags: those would replace the settings on the service.
 # shellcheck disable=SC2086
 gcloud run deploy "$CLOUD_RUN_SERVICE" "${where[@]}" --image "$image" \
-  --service-account "$GCP_RUNTIME_SERVICE_ACCOUNT" --env-vars-file "$CLOUD_RUN_ENV_YAML_FILE" \
-  --set-secrets "$CLOUD_RUN_SECRETS" $CLOUD_RUN_SERVICE_FLAGS --quiet
+  --service-account "$GCP_RUNTIME_SERVICE_ACCOUNT" $CLOUD_RUN_SERVICE_FLAGS --quiet
 
 echo "Updating the purge job..."
 # shellcheck disable=SC2086
 gcloud run jobs deploy "$CLOUD_RUN_PURGE_JOB" "${where[@]}" --image "$image" \
   --command ngome-purge --service-account "$GCP_RUNTIME_SERVICE_ACCOUNT" \
-  --env-vars-file "$CLOUD_RUN_ENV_YAML_FILE" --set-secrets "$CLOUD_RUN_SECRETS" \
-  $CLOUD_RUN_JOB_FLAGS --quiet
+  --env-vars-file "$settings_file" --set-secrets "$secrets" $CLOUD_RUN_JOB_FLAGS --quiet
 
 url="$(gcloud run services describe "$CLOUD_RUN_SERVICE" "${where[@]}" --format 'value(status.url)')"
 curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "$url/health/ready" > /dev/null
