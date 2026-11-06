@@ -13,6 +13,7 @@ from ngome.auth.google import build_google_verifier
 from ngome.auth.providers import build_email_sender
 from ngome.core.config import Settings, get_settings
 from ngome.core.logging import configure_logging, get_logger
+from ngome.db.migrate import upgrade_to_head
 from ngome.db.session import create_engine, create_sessionmaker
 from ngome.integrity import router as integrity_router
 from ngome.integrity.apple import build_app_attest_policy, load_root_ca
@@ -39,6 +40,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        # Before the port opens, so Cloud Run sends no traffic to a revision until its
+        # schema is in place, and keeps the old revision serving if a migration fails.
+        if settings.migrate_on_start:
+            revision = await upgrade_to_head(engine, settings.alembic_config)
+            get_logger("ngome.db").info("db.migrated", revision=revision)
         yield
         await blob_store.aclose()
         await engine.dispose()
