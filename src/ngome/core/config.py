@@ -21,6 +21,15 @@ class Settings(BaseSettings):
     log_json: bool = True
 
     database_url: str = "postgresql+asyncpg://ngome:ngome@localhost:5432/ngome"
+    migrate_on_start: bool = Field(
+        default=False,
+        description="Bring the schema up to date before the API takes requests. The "
+        "Docker image turns it on, so each new Cloud Run revision migrates as it starts.",
+    )
+    alembic_config: Path = Field(
+        default=Path("alembic.ini"),
+        description="The Alembic config the API migrates with, relative to its working directory.",
+    )
 
     jwt_secret: SecretStr
     contact_pepper: SecretStr = Field(

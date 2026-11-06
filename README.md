@@ -155,7 +155,8 @@ Production runs in the EU: the API on Google Cloud Run, Postgres on [Neon](https
 
 - **Deploys:** Cloud Run deploys `main` itself. Each push builds the Dockerfile on Cloud Build and swaps the service's image.
 - **Settings:** kept in this repository's `production` environment on GitHub, with secrets as environment secrets. The **Sync settings** workflow checks them and applies them to Cloud Run, with the secrets held in Secret Manager.
-- **Jobs:** migrations and the daily retention purge run as Cloud Run jobs.
+- **Migrations:** each new revision applies them as it starts, before it takes traffic. A Cloud Run job can also run them by hand.
+- **Jobs:** the daily retention purge runs as a Cloud Run job.
 
 [docs/deploying.md](docs/deploying.md) has the setup and the day-to-day commands: deploying, changing a setting, migrations, rollback and adding R2.
 

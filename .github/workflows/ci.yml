@@ -70,6 +70,11 @@ jobs:
       - name: Models and migrations agree
         run: uv run alembic check
       - run: uv run alembic downgrade base
+      # Server instances and the migrate job starting at once take turns.
+      - name: Concurrent migrations
+        run: uv run pytest -m postgres
+        env:
+          NGOME_TEST_DATABASE_URL: ${{ env.NGOME_DATABASE_URL }}
 
   object-storage:
     name: Object storage on MinIO

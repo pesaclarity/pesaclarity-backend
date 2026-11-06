@@ -8,7 +8,7 @@ How the server runs in production, and the commands to set it up and look after 
 | --- | --- | --- |
 | API | Cloud Run service | Cloud Run's auto-deploy: every push to `main` builds the `Dockerfile` on Cloud Build and swaps the service's image. Nothing else on the service changes. |
 | Settings | GitHub, `production` environment: secrets as environment secrets, everything else as environment variables | Edit them in GitHub, then run the **Sync settings** workflow. It checks them, puts secrets in Secret Manager and applies everything to the service and both jobs. |
-| Database | Postgres on Neon | The migrate job (`alembic upgrade head`), run by hand when a change adds a migration |
+| Database | Postgres on Neon | Each new revision migrates as it starts, before it takes traffic ([Migrations](#migrations)). The migrate job (`alembic upgrade head`) does the same by hand. |
 | Retention | The purge job (`ngome-purge`) | Cloud Scheduler starts it daily |
 | Sign-in email | Brevo, over SMTP | |
 | Backups | Postgres for now; Cloudflare R2 later ([Adding R2](#adding-r2)) | |
@@ -28,7 +28,7 @@ gcloud config set project "$GCP_PROJECT_ID"
 
 ### Deploy
 
-Merge to `main` (README, "Branches and releases"). To watch the build: `gcloud builds list --limit 3`. A failed build, or a revision that doesn't start, leaves the previous revision serving.
+Merge to `main` (README, "Branches and releases"). To watch the build: `gcloud builds list --limit 3`. A failed build, a failed migration, or a revision that doesn't start leaves the previous revision serving.
 
 ### Change a setting
 
@@ -51,15 +51,25 @@ GitHub may hold a Sync settings run for approval when it flags a workflow as pot
 
 **Never change `NGOME_CONTACT_PEPPER`.** It keys every account, and the sync refuses to apply a new value. If a run fails on it, put the original value back: `gcloud secrets versions access 1 --secret <pepper secret>`.
 
-### When a change adds a migration
+### Migrations
 
-Auto-deploy doesn't run migrations. Run them right after the deploy finishes; until then, the new code is running on the old schema.
+The image sets `NGOME_MIGRATE_ON_START=true`, so a new revision runs `alembic upgrade head` as it starts, before it opens its port. Cloud Run sends it no traffic until then.
+
+- **All or nothing.** Every pending migration runs in one transaction. If one fails, nothing is applied, the revision doesn't start and the previous one keeps serving. `gcloud run services logs read` shows the error.
+- **One at a time.** Several instances of a new revision, or an instance and the migrate job, can start together. They take turns on a Postgres advisory lock (`migrations/env.py`); the first applies the migrations and the rest find nothing to do.
+- **The previous release keeps serving** on the new schema until the new revision takes over, so a migration must work with both. Add columns and tables in one release and remove the old ones in a later one.
+- **Keep them quick.** A starting container gets about four minutes before Cloud Run gives up on it, and the revision then doesn't start. Keep slow data changes out of migrations.
+
+To migrate only with the job, set `NGOME_MIGRATE_ON_START` to `false` in GitHub and run **Sync settings**.
+
+### After a deploy: the jobs' image
+
+Auto-deploy only updates the service. When a change touches the purge, or you want the migrate job on the new code, point both jobs at the service's image:
 
 ```sh
 img="$(gcloud run services describe "$CLOUD_RUN_SERVICE" --region "$GCP_REGION" --format 'value(spec.template.spec.containers[0].image)')"
 gcloud run jobs update "$CLOUD_RUN_PURGE_JOB" --region "$GCP_REGION" --image "$img"
 gcloud run jobs update "$CLOUD_RUN_MIGRATE_JOB" --region "$GCP_REGION" --image "$img"
-gcloud run jobs execute "$CLOUD_RUN_MIGRATE_JOB" --region "$GCP_REGION" --wait
 ```
 
 ### Roll back
