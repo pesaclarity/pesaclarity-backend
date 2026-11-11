@@ -1,6 +1,6 @@
 # pesaclarity-backend
 
-The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free Android app (with an iPhone version in the works) that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has three narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, and combine clipped, noised federated model updates under secure aggregation.
+The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free app for Android and iPhone that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has three narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, and combine clipped, noised federated model updates under secure aggregation.
 
 **Codename:** ngome, Swahili for "fortress".
 
