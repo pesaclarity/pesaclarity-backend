@@ -22,9 +22,12 @@ WORKDIR /app
 COPY --from=build --chown=ngome:ngome /app/.venv /app/.venv
 COPY --from=build --chown=ngome:ngome /app/alembic.ini /app/alembic.ini
 COPY --from=build --chown=ngome:ngome /app/migrations /app/migrations
+# NGOME_MIGRATE_ON_START: each new revision brings the schema up to date before it takes
+# traffic (docs/deploying.md). Set it to false on the service to migrate only with the job.
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    NGOME_MIGRATE_ON_START=true
 USER ngome
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \

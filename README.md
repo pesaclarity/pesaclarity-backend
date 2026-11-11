@@ -1,6 +1,6 @@
 # pesaclarity-backend
 
-The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free Android app (with an iPhone version in the works) that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has three narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, and combine clipped, noised federated model updates under secure aggregation.
+The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free app for Android and iPhone that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has three narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, and combine clipped, noised federated model updates under secure aggregation.
 
 **Codename:** ngome, Swahili for "fortress".
 
@@ -155,7 +155,8 @@ Production runs in the EU: the API on Google Cloud Run, Postgres on [Neon](https
 
 - **Deploys:** Cloud Run deploys `main` itself. Each push builds the Dockerfile on Cloud Build and swaps the service's image.
 - **Settings:** kept in this repository's `production` environment on GitHub, with secrets as environment secrets. The **Sync settings** workflow checks them and applies them to Cloud Run, with the secrets held in Secret Manager.
-- **Jobs:** migrations and the daily retention purge run as Cloud Run jobs.
+- **Migrations:** each new revision applies them as it starts, before it takes traffic. A Cloud Run job can also run them by hand.
+- **Jobs:** the daily retention purge runs as a Cloud Run job.
 
 [docs/deploying.md](docs/deploying.md) has the setup and the day-to-day commands: deploying, changing a setting, migrations, rollback and adding R2.
 
