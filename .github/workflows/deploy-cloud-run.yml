@@ -1,10 +1,15 @@
 name: Deploy to Cloud Run
 
+# Checks run before the push (tool/check via the pre-push hook), so every push to
+# main deploys. Doc-only changes don't.
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
     branches: [main]
+    paths-ignore:
+      - "*.md"
+      - docs/**
+      - LICENSE
+      - .github/ISSUE_TEMPLATE/**
   workflow_dispatch:
 
 permissions:
@@ -29,10 +34,7 @@ env:
 jobs:
   deploy:
     name: Build, migrate and release
-    if: >-
-      vars.GCP_PROJECT_ID != '' && (github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'))
+    if: vars.GCP_PROJECT_ID != ''
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -52,8 +54,6 @@ jobs:
           fi
 
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: google-github-actions/auth@v2
         with:

@@ -13,16 +13,15 @@ docker compose up -d db
 uv run alembic upgrade head
 ```
 
-## Before you open a pull request
+## Checks run on your machine
+
+GitHub only builds, releases and deploys; the checks run locally. Once per clone:
 
 ```sh
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy
-uv run pytest
+tool/setup-hooks
 ```
 
-All four must pass; CI runs the same checks, plus the object storage tests on MinIO, the migrations on Postgres and a Docker build. To run the object storage tests locally, see "Testing" in the README.
+Then every `git push` runs the full `tool/check` (lint, format, mypy, unit tests, migrations on Postgres, object storage on MinIO, Docker build) and checks that the titles of the commits you push follow Conventional Commits. Start Postgres and MinIO with `docker compose up -d --wait db minio` so those steps run; without them they are skipped with a notice. `tool/check --fast` (lint, format, types, unit tests) is there for a quick run by hand. In an emergency, `git push --no-verify` skips the hook. See "Testing" in the README.
 
 ## Rules for this server
 
@@ -37,5 +36,5 @@ All four must pass; CI runs the same checks, plus the object storage tests on Mi
 
 - Small, focused pull requests against `dev`, with a short description of what changed and why. `main` takes only `dev` and release pull requests (see [Branches and releases](README.md#branches-and-releases)).
 - Pull request titles follow [Conventional Commits](https://www.conventionalcommits.org): `feat: add rate limit to code requests`, `fix: …`, `feat!: …` for a breaking change. They set the next version and the changelog.
-- Commit messages: one short line in the imperative, e.g. "Add rate limit to code requests".
+- Commit messages: one short Conventional Commits line, e.g. `feat: add rate limit to code requests`. The pre-push hook rejects other titles (merge commits excepted).
 - New dependencies need a reason in the pull request.

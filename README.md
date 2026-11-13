@@ -145,7 +145,7 @@ Before enabling it: enable `playintegrity.googleapis.com` in the Cloud project t
 
 Every push to `main` deploys, so `main` takes only tested, approved changes.
 
-1. Pull requests go to `dev`, with a [Conventional Commits](https://www.conventionalcommits.org) title (`feat: …`, `fix: …`, `feat!: …` for a breaking change; `docs`, `test`, `ci`, `chore`, `refactor`, `build`, `perf`, `style`, `revert` too). The `PR title` check enforces it, and squash merges keep the title as the commit message. CI runs on every push to `dev`.
+1. Pull requests go to `dev`, with a [Conventional Commits](https://www.conventionalcommits.org) title (`feat: …`, `fix: …`, `feat!: …` for a breaking change; `docs`, `test`, `ci`, `chore`, `refactor`, `build`, `perf`, `style`, `revert` too). Squash merges keep the title as the commit message. Checks run on your machine, not on GitHub: the pre-push hook runs `tool/check` and checks the titles of the commits you push (see [Testing](#testing)).
 2. When `dev` is ready, open a pull request from `dev` to `main`. The `Release gate` check allows only `dev` (or the release pull request) into `main`, and its QA job waits for a reviewer in the `qa` environment. Merge it with a merge commit, not a squash, so each change keeps its own title.
 3. On `main`, release-please keeps a release pull request open with the next version (SemVer from the titles: `feat` bumps the minor, `fix` the patch; before 1.0 a breaking change bumps the minor) in `pyproject.toml`, `uv.lock` and `ngome.__version__`, and the `CHANGELOG.md` entry. Merging it tags `vX.Y.Z` and merges the release back into `dev`.
 
@@ -178,20 +178,20 @@ tests/      pytest suite (SQLite in a temp file; no Postgres needed)
 
 ## Testing
 
-```sh
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy
-uv run pytest
-```
-
-The object storage tests skip unless `NGOME_TEST_S3_ENDPOINT_URL` is set. With the compose MinIO running:
+GitHub runs no checks; they run on your machine. Enable the pre-push hook once per clone:
 
 ```sh
-NGOME_TEST_S3_ENDPOINT_URL=http://localhost:9000 uv run pytest -m object_storage
+tool/setup-hooks
 ```
 
-CI also runs those against MinIO, applies the migrations to Postgres, checks they match the models and builds the Docker image.
+`tool/check` runs everything: ruff lint and format, mypy, the unit tests, the migrations on Postgres (upgrade, `alembic check` that models and migrations agree, downgrade, concurrent migrations), the object storage tests on MinIO and the Docker build. `tool/check --fast` runs only lint, format, types and unit tests. The unit tests always run; for the rest start the services first:
+
+```sh
+docker compose up -d --wait db minio   # or: tool/check --up
+tool/check
+```
+
+Without them those steps are skipped with a notice. The migration steps use a scratch `ngome_check` database on the compose Postgres, so your development data is untouched; `NGOME_CHECK_POSTGRES_URL` and `NGOME_TEST_S3_ENDPOINT_URL` point them elsewhere.
 
 ## Not done yet
 
