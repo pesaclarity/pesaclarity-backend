@@ -1,5 +1,6 @@
 """Import every model so ``Base.metadata`` is complete for Alembic and tests."""
 
+from ngome.appstatus.models import AppNotice
 from ngome.auth.models import Account, AuthEvent, Device, OtpChallenge, RefreshToken
 from ngome.db.base import Base
 from ngome.integrity.models import AppAttestChallenge, AppAttestKey
@@ -10,6 +11,7 @@ __all__ = [
     "Account",
     "AppAttestChallenge",
     "AppAttestKey",
+    "AppNotice",
     "AuthEvent",
     "Backup",
     "Base",

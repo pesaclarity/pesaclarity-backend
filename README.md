@@ -15,6 +15,7 @@ The product spec and brand live in [pesaclarity/docs](https://github.com/pesacla
 | Auth | Account id, a keyed hash of the sign-in contact, devices, sign-up, sign-in and sign-out events | The email address or Google id in readable form, any financial data |
 | Backup vault | Ciphertext (AES-256-GCM, keyed on the phone with Argon2id) in object storage under a random key; its size, SHA-256 and upload time in Postgres | Keys, passphrases or anything readable; account ids in object keys |
 | Federated learning | Aggregated model updates | Raw data or individual updates in the clear |
+| App status | The notices the team sends (updates, news) | Anything about who asked: no address, version or account |
 
 Accounts are optional: the app works fully without one, and only the vault needs sign-in.
 
@@ -48,6 +49,8 @@ To run everything in containers instead: `docker compose up --build`.
 | `POST /v1/vault/backups` | Upload ciphertext (`application/octet-stream`, optional `X-Content-SHA256`, optional `X-Backup-Space` naming which of the phone's spaces it copies; each space keeps its own newest `NGOME_VAULT_KEEP_BACKUPS`) |
 | `POST /v1/privacy/copy` | Email the signed-in person a copy of the privacy policy, as text and a PDF. The address is used once and never stored or logged. Only text whose SHA-256 is in `NGOME_PRIVACY_POLICY_SHA256` is sent, at most `NGOME_PRIVACY_COPY_MAX_PER_DAY` copies a day per account. Get the digest with `sha256sum assets/policy/privacy_policy.md` in pesaclarity-app. |
 | `GET /v1/vault/backups`, `GET` / `DELETE /v1/vault/backups/{id}` | List, download and delete backups |
+| `GET /v1/app-status?version=&build=&platform=` | The newest app version and active notices for that build, signed with Ed25519. No account; nothing about the caller is logged or stored |
+| `POST` / `GET /v1/admin/app-notices`, `POST /v1/admin/app-notices/{id}/disable` | Create, list and stop notices (admin token) |
 
 Access tokens last 10 minutes; refresh tokens rotate on every use and expire after 30 days. The vault keeps the newest 10 backups per account, up to 256 MiB in total.
 
@@ -116,6 +119,45 @@ spec:
                 - secretRef:
                     name: ngome-env  # the same NGOME_* settings as the API
 ```
+
+### App status and notices
+
+The app asks `GET /v1/app-status?version=0.3.0&build=play&platform=android` when it opens, at most once a day, without an account. `build` is `play`, `foss`, `ios` or `website`; `platform` is `android` or `ios`. The server logs only the route and status, never the caller's address or the query, and stores nothing about the request. Responses may be cached (`NGOME_APP_STATUS_CACHE_SECONDS`, default 300).
+
+The body is `{"alg": "Ed25519", "payload": <base64>, "signature": <base64>}`. The signature covers the bytes `pesaclarity.app-status.v1\n` followed by the decoded payload, which is JSON:
+
+```json
+{"format": 1, "issued_at": "2026-11-17T08:00:00Z", "version": "0.3.0", "build": "play",
+ "platform": "android", "latest_version": "0.4.0",
+ "notices": [{"id": "…", "kind": "update", "title": "Pesa Clarity 0.4.0 is ready",
+   "body": "Reads Equity card payments and fixes Fuliza totals.", "latest_version": "0.4.0",
+   "min_version": null, "required_reason": null, "reread_from": null}]}
+```
+
+The app pins the public key in its source, checks the signature, and refuses a payload that names another version, build or platform, or whose `issued_at` is old or older than one it has already seen, so an old notice cannot be replayed. A response it cannot verify shows nothing; it never blocks the app.
+
+Notices are created by the team with the admin routes, which take `Authorization: Bearer $NGOME_ADMIN_TOKEN` (compared in constant time; unset turns the routes off):
+
+```sh
+curl -X POST "$API/v1/admin/app-notices" -H "Authorization: Bearer $NGOME_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"kind": "update", "title": "Pesa Clarity 0.4.0 is ready",
+  "body": "Reads Equity card payments and fixes Fuliza totals.", "latest_version": "0.4.0",
+  "builds": ["play", "foss", "ios", "website"]}'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `update` (needs `latest_version`; shown to builds older than it) or `info` (news, shown to every version) |
+| `title`, `body` | Up to 80 and 500 characters |
+| `min_version` | Update only: builds older than this must update |
+| `required_reason` | `amounts_wrong` only, with `min_version`. The app blocks older builds only for a bug that makes amounts wrong; without it the update shows as the usual card |
+| `builds` | Any of `play`, `foss`, `ios`, `website` |
+| `reread_from` | Optional date: asks the app to read its messages again from that day |
+| `starts_at`, `ends_at` | Optional, with a time zone. Shown from `starts_at` (default now) until `ends_at` |
+
+`GET /v1/admin/app-notices` lists them all; `POST /v1/admin/app-notices/{id}/disable` stops one.
+
+**Signing key.** `uv run ngome-app-status-key` prints a new seed and its public key. Set the seed as the secret `NGOME_APP_STATUS_SIGNING_SEED` (base64 of 32 bytes; unset turns app status off) and add the public key to the app's pinned list in a release before the server signs with it. Never commit a seed; the tests make throwaway keys.
 
 ### Backup storage
 
