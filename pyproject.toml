@@ -27,6 +27,7 @@ fl = [
 
 [project.scripts]
 ngome-purge = "ngome.auth.retention:main"
+ngome-app-status-key = "ngome.appstatus.signing:main"
 
 [build-system]
 requires = ["hatchling"]

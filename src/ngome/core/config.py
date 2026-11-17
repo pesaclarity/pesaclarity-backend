@@ -1,5 +1,7 @@
 """Runtime settings, read from the environment (prefix ``NGOME_``) or a ``.env`` file."""
 
+import base64
+import binascii
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
@@ -11,6 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 Environment = Literal["development", "test", "production"]
 
 _MIN_SECRET_LENGTH = 32
+_ED25519_SEED_BYTES = 32
 
 
 class Settings(BaseSettings):
@@ -88,6 +91,18 @@ class Settings(BaseSettings):
     # Uploads without a token or assertion: F-Droid builds, and builds that could not attest.
     vault_unattested_uploads: Literal["allow", "reject"] | None = None
 
+    # App status and notices (``GET /v1/app-status``, ``/v1/admin/app-notices``).
+    admin_token: SecretStr | None = Field(
+        default=None,
+        description="Bearer token for the admin routes. Unset turns them off.",
+    )
+    app_status_signing_seed: SecretStr | None = Field(
+        default=None,
+        description="Base64 of the 32-byte Ed25519 seed that signs app status responses. "
+        "The app pins the matching public key. Unset turns app status off.",
+    )
+    app_status_cache_seconds: int = Field(default=300, ge=0, le=3600)
+
     vault_max_backup_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
     vault_keep_backups: int = Field(default=10, ge=1, le=100)
     vault_max_account_bytes: int = Field(
@@ -162,6 +177,24 @@ class Settings(BaseSettings):
             raise ValueError("vault_s3_bucket is required when vault_blob_store is 's3'")
         if self.vault_blob_store == "filesystem" and self.vault_fs_root is None:
             raise ValueError("vault_fs_root is required when vault_blob_store is 'filesystem'")
+        return self
+
+    @model_validator(mode="after")
+    def _check_app_status(self) -> Self:
+        if (
+            self.admin_token is not None
+            and len(self.admin_token.get_secret_value()) < _MIN_SECRET_LENGTH
+        ):
+            raise ValueError(f"admin_token must be at least {_MIN_SECRET_LENGTH} characters")
+        if self.app_status_signing_seed is not None:
+            try:
+                seed = base64.b64decode(
+                    self.app_status_signing_seed.get_secret_value(), validate=True
+                )
+            except binascii.Error as exc:
+                raise ValueError("app_status_signing_seed must be base64") from exc
+            if len(seed) != _ED25519_SEED_BYTES:
+                raise ValueError("app_status_signing_seed must be 32 bytes, base64-encoded")
         return self
 
     @model_validator(mode="after")

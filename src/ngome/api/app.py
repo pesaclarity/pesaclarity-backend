@@ -8,6 +8,8 @@ from fastapi import FastAPI, Request, Response
 
 from ngome import __version__
 from ngome.api.routes import account, health
+from ngome.appstatus import router as app_status_router
+from ngome.appstatus.signing import AppStatusSigner
 from ngome.auth import router as auth_router
 from ngome.auth.google import build_google_verifier
 from ngome.auth.providers import build_email_sender
@@ -66,6 +68,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.integrity_verifier = build_integrity_verifier(settings)
     app.state.app_attest_policy = build_app_attest_policy(settings)
     app.state.app_attest_root = load_root_ca()
+    seed = settings.app_status_signing_seed
+    app.state.app_status_signer = (
+        AppStatusSigner.from_base64(seed.get_secret_value()) if seed else None
+    )
 
     @app.middleware("http")
     async def access_log(
@@ -88,4 +94,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(vault_router.router)
     app.include_router(integrity_router.router)
     app.include_router(privacy_router.router)
+    app.include_router(app_status_router.router)
+    app.include_router(app_status_router.admin_router)
     return app
