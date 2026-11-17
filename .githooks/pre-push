@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Before a push: commit titles follow Conventional Commits, then the full tool/check.
+# Emergency bypass: git push --no-verify
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+# Release notes and version numbers come from these titles (release-please).
+pattern='^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert|style)(\([a-z0-9-]+\))?!?: [^ ].*$'
+
+bad=0
+# Git passes one line per ref being pushed: <local ref> <local sha> <remote ref> <remote sha>.
+while read -r _ local_sha _ remote_sha; do
+  [ "${local_sha//0/}" = "" ] && continue # deleting a branch
+  if [ "${remote_sha//0/}" = "" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    range=("$local_sha" --not --remotes) # new branch (or unknown remote tip): unpushed commits
+  else
+    range=("$remote_sha..$local_sha")
+  fi
+  # Merge commits keep git's own title ("Merge branch ...").
+  while IFS= read -r line; do
+    title="${line#* }"
+    if [[ ! "$title" =~ $pattern ]]; then
+      echo "Commit ${line%% *} title is not a Conventional Commit: $title" >&2
+      bad=1
+    fi
+  done < <(git log --no-merges --format='%h %s' "${range[@]}")
+done
+if [ "$bad" = 1 ]; then
+  cat >&2 <<'MSG'
+Start each title with a type, e.g. 'feat: add debts screen', 'fix: keep footers out of rows'
+or 'feat!: change the backup format'. Types: feat, fix, perf, refactor, docs, test, build,
+ci, chore, revert, style. Reword with: git rebase -i <base> (choose "reword").
+MSG
+  exit 1
+fi
+
+exec tool/check

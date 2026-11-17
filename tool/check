@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Runs every check on your machine (GitHub only builds, releases and deploys).
+#
+#   tool/check          everything; the pre-push hook runs this
+#   tool/check --fast   lint, format, types and unit tests only
+#   tool/check --up     start Postgres and MinIO (docker compose up) first, then everything
+#
+# The integration steps use the services from docker-compose.yml. Start them with
+#   docker compose up -d --wait db minio
+# or point these at your own (defaults are the compose ones):
+#   NGOME_CHECK_POSTGRES_URL   a Postgres server; a scratch database "ngome_check" is
+#                              recreated on it each run, so your dev data is untouched
+#   NGOME_TEST_S3_ENDPOINT_URL MinIO or S3 (plus NGOME_TEST_S3_* keys, see tests/test_storage.py)
+# A step whose service or tool is missing is skipped with a notice, never silently.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+fast=false up=false
+for arg in "$@"; do
+  case "$arg" in
+    --fast) fast=true ;;
+    --up) up=true ;;
+    *) echo "usage: tool/check [--fast] [--up]" >&2; exit 64 ;;
+  esac
+done
+
+# Placeholder secrets so the settings load, as CI had; never used anywhere real.
+export NGOME_JWT_SECRET="${NGOME_JWT_SECRET:-local-check-only-jwt-secret-not-used-anywhere-real}"
+export NGOME_CONTACT_PEPPER="${NGOME_CONTACT_PEPPER:-local-check-only-contact-pepper-not-used-anywhere}"
+postgres_server="${NGOME_CHECK_POSTGRES_URL:-postgresql://ngome:ngome@localhost:5432/ngome}"
+s3_endpoint="${NGOME_TEST_S3_ENDPOINT_URL:-http://localhost:9000}"
+
+skipped=()
+step() { # step "name" "how to fix" command...
+  local name="$1" fix="$2"
+  shift 2
+  echo "==> $name"
+  if ! "$@"; then
+    echo >&2
+    echo "FAILED: $name" >&2
+    echo "  To fix: $fix" >&2
+    echo "  Re-run: tool/check$($fast && echo ' --fast')" >&2
+    exit 1
+  fi
+}
+skip() { # skip "name" "why and how to enable it"
+  echo "--> SKIPPED: $1"
+  echo "    $2"
+  skipped+=("$1")
+}
+run() { uv run --no-sync "$@"; }
+
+if ! command -v uv >/dev/null; then
+  echo "FAILED: uv is not installed. Install it: https://docs.astral.sh/uv/getting-started/installation/" >&2
+  exit 1
+fi
+
+step "Install dependencies (uv sync --locked --all-extras)" \
+  "uv.lock is out of date with pyproject.toml: run 'uv lock' and commit uv.lock" \
+  uv sync --locked --all-extras --quiet
+step "Lint (ruff check)" "run 'uv run ruff check --fix .' and fix what is left" \
+  run ruff check .
+step "Format (ruff format --check)" "run 'uv run ruff format .'" \
+  run ruff format --check .
+step "Types (mypy)" "fix the errors mypy lists above" \
+  run mypy
+step "Unit tests (pytest)" "fix the failing tests above; 'uv run pytest -x' stops at the first" \
+  run pytest
+
+if $fast; then
+  echo "Fast checks passed. The full 'tool/check' (run on push) adds Postgres, MinIO and the Docker build."
+  exit 0
+fi
+
+docker_ok=false
+if command -v docker >/dev/null && docker info >/dev/null 2>&1; then docker_ok=true; fi
+
+if $up; then
+  $docker_ok || { echo "FAILED: --up needs Docker running" >&2; exit 1; }
+  step "Start Postgres and MinIO (docker compose up)" "see the docker compose output above" \
+    docker compose up -d --wait db minio
+fi
+
+# Migrations on Postgres: upgrade, models match migrations, downgrade, concurrent migrations.
+if database_url="$(run python tool/services.py postgres "$postgres_server")"; then
+  step "Migrations: alembic upgrade head" "fix the migration that failed above" \
+    env NGOME_DATABASE_URL="$database_url" uv run --no-sync alembic upgrade head
+  step "Migrations: models and migrations agree (alembic check)" \
+    "add a migration: uv run alembic revision --autogenerate -m 'short description'" \
+    env NGOME_DATABASE_URL="$database_url" uv run --no-sync alembic check
+  step "Migrations: alembic downgrade base" "fix the downgrade of the migration above" \
+    env NGOME_DATABASE_URL="$database_url" uv run --no-sync alembic downgrade base
+  step "Migrations: concurrent (pytest -m postgres)" "fix the failing tests above" \
+    env NGOME_DATABASE_URL="$database_url" NGOME_TEST_DATABASE_URL="$database_url" \
+    uv run --no-sync pytest -m postgres
+else
+  skip "Migrations on Postgres" \
+    "No Postgres at NGOME_CHECK_POSTGRES_URL. Start it: docker compose up -d --wait db (or tool/check --up)"
+fi
+
+# Object storage on MinIO.
+if run python tool/services.py s3 "$s3_endpoint"; then
+  step "Object storage (pytest -m object_storage)" "fix the failing tests above" \
+    env NGOME_TEST_S3_ENDPOINT_URL="$s3_endpoint" uv run --no-sync pytest -m object_storage
+else
+  skip "Object storage on MinIO" \
+    "No MinIO at $s3_endpoint. Start it: docker compose up -d --wait minio (or tool/check --up)"
+fi
+
+# The Docker image builds (deploys build it again; this catches a broken Dockerfile first).
+if $docker_ok; then
+  step "Docker build" "fix the Dockerfile or the files it copies" \
+    docker build --quiet --tag ngome:check .
+else
+  skip "Docker build" "Docker is not installed or not running. Install: https://docs.docker.com/get-docker/"
+fi
+
+if ((${#skipped[@]})); then
+  echo "Checks passed, but ${#skipped[@]} skipped: ${skipped[*]}. See the notices above."
+else
+  echo "All checks passed."
+fi

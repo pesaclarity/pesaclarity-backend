@@ -45,6 +45,8 @@ jobs:
           NGOME_SMTP_PASSWORD: ${{ secrets.NGOME_SMTP_PASSWORD }}
           NGOME_VAULT_S3_ACCESS_KEY_ID: ${{ secrets.NGOME_VAULT_S3_ACCESS_KEY_ID }}
           NGOME_VAULT_S3_SECRET_ACCESS_KEY: ${{ secrets.NGOME_VAULT_S3_SECRET_ACCESS_KEY }}
+          NGOME_ADMIN_TOKEN: ${{ secrets.NGOME_ADMIN_TOKEN }}
+          NGOME_APP_STATUS_SIGNING_SEED: ${{ secrets.NGOME_APP_STATUS_SIGNING_SEED }}
         run: |
           umask 077
           printf '%s' "$VARS_JSON" > "$RUNNER_TEMP/vars.json"

@@ -15,6 +15,7 @@ The product spec and brand live in [pesaclarity/docs](https://github.com/pesacla
 | Auth | Account id, a keyed hash of the sign-in contact, devices, sign-up, sign-in and sign-out events | The email address or Google id in readable form, any financial data |
 | Backup vault | Ciphertext (AES-256-GCM, keyed on the phone with Argon2id) in object storage under a random key; its size, SHA-256 and upload time in Postgres | Keys, passphrases or anything readable; account ids in object keys |
 | Federated learning | Aggregated model updates | Raw data or individual updates in the clear |
+| App status | The notices the team sends (updates, news) | Anything about who asked: no address, version or account |
 
 Accounts are optional: the app works fully without one, and only the vault needs sign-in.
 
@@ -48,6 +49,8 @@ To run everything in containers instead: `docker compose up --build`.
 | `POST /v1/vault/backups` | Upload ciphertext (`application/octet-stream`, optional `X-Content-SHA256`, optional `X-Backup-Space` naming which of the phone's spaces it copies; each space keeps its own newest `NGOME_VAULT_KEEP_BACKUPS`) |
 | `POST /v1/privacy/copy` | Email the signed-in person a copy of the privacy policy, as text and a PDF. The address is used once and never stored or logged. Only text whose SHA-256 is in `NGOME_PRIVACY_POLICY_SHA256` is sent, at most `NGOME_PRIVACY_COPY_MAX_PER_DAY` copies a day per account. Get the digest with `sha256sum assets/policy/privacy_policy.md` in pesaclarity-app. |
 | `GET /v1/vault/backups`, `GET` / `DELETE /v1/vault/backups/{id}` | List, download and delete backups |
+| `GET /v1/app-status?version=&build=&platform=` | The newest app version and active notices for that build, signed with Ed25519. No account; nothing about the caller is logged or stored |
+| `POST` / `GET /v1/admin/app-notices`, `POST /v1/admin/app-notices/{id}/disable` | Create, list and stop notices (admin token) |
 
 Access tokens last 10 minutes; refresh tokens rotate on every use and expire after 30 days. The vault keeps the newest 10 backups per account, up to 256 MiB in total.
 
@@ -117,6 +120,45 @@ spec:
                     name: ngome-env  # the same NGOME_* settings as the API
 ```
 
+### App status and notices
+
+The app asks `GET /v1/app-status?version=0.3.0&build=play&platform=android` when it opens, at most once a day, without an account. `build` is `play`, `foss`, `ios` or `website`; `platform` is `android` or `ios`. The server logs only the route and status, never the caller's address or the query, and stores nothing about the request. Responses may be cached (`NGOME_APP_STATUS_CACHE_SECONDS`, default 300).
+
+The body is `{"alg": "Ed25519", "payload": <base64>, "signature": <base64>}`. The signature covers the bytes `pesaclarity.app-status.v1\n` followed by the decoded payload, which is JSON:
+
+```json
+{"format": 1, "issued_at": "2026-11-17T08:00:00Z", "version": "0.3.0", "build": "play",
+ "platform": "android", "latest_version": "0.4.0",
+ "notices": [{"id": "…", "kind": "update", "title": "Pesa Clarity 0.4.0 is ready",
+   "body": "Reads Equity card payments and fixes Fuliza totals.", "latest_version": "0.4.0",
+   "min_version": null, "required_reason": null, "reread_from": null}]}
+```
+
+The app pins the public key in its source, checks the signature, and refuses a payload that names another version, build or platform, or whose `issued_at` is old or older than one it has already seen, so an old notice cannot be replayed. A response it cannot verify shows nothing; it never blocks the app.
+
+Notices are created by the team with the admin routes, which take `Authorization: Bearer $NGOME_ADMIN_TOKEN` (compared in constant time; unset turns the routes off):
+
+```sh
+curl -X POST "$API/v1/admin/app-notices" -H "Authorization: Bearer $NGOME_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"kind": "update", "title": "Pesa Clarity 0.4.0 is ready",
+  "body": "Reads Equity card payments and fixes Fuliza totals.", "latest_version": "0.4.0",
+  "builds": ["play", "foss", "ios", "website"]}'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `update` (needs `latest_version`; shown to builds older than it) or `info` (news, shown to every version) |
+| `title`, `body` | Up to 80 and 500 characters |
+| `min_version` | Update only: builds older than this must update |
+| `required_reason` | `amounts_wrong` only, with `min_version`. The app blocks older builds only for a bug that makes amounts wrong; without it the update shows as the usual card |
+| `builds` | Any of `play`, `foss`, `ios`, `website` |
+| `reread_from` | Optional date: asks the app to read its messages again from that day |
+| `starts_at`, `ends_at` | Optional, with a time zone. Shown from `starts_at` (default now) until `ends_at` |
+
+`GET /v1/admin/app-notices` lists them all; `POST /v1/admin/app-notices/{id}/disable` stops one.
+
+**Signing key.** `uv run ngome-app-status-key` prints a new seed and its public key. Set the seed as the secret `NGOME_APP_STATUS_SIGNING_SEED` (base64 of 32 bytes; unset turns app status off) and add the public key to the app's pinned list in a release before the server signs with it. Never commit a seed; the tests make throwaway keys.
+
 ### Backup storage
 
 Backup bytes go to a blob store chosen by `NGOME_VAULT_BLOB_STORE`: `postgres` (the default, for development and tests), `filesystem` (files under `NGOME_VAULT_FS_ROOT`, for development or a single-node install) or `s3`, which works with AWS S3, Cloudflare R2 and MinIO. The server only stores and returns ciphertext; it never holds a key that could decrypt it. Uploads and downloads stream, with the size cap, the account quota and the checksum checked on the way in. Metadata always stays in Postgres.
@@ -145,7 +187,7 @@ Before enabling it: enable `playintegrity.googleapis.com` in the Cloud project t
 
 Every push to `main` deploys, so `main` takes only tested, approved changes.
 
-1. Pull requests go to `dev`, with a [Conventional Commits](https://www.conventionalcommits.org) title (`feat: …`, `fix: …`, `feat!: …` for a breaking change; `docs`, `test`, `ci`, `chore`, `refactor`, `build`, `perf`, `style`, `revert` too). The `PR title` check enforces it, and squash merges keep the title as the commit message. CI runs on every push to `dev`.
+1. Pull requests go to `dev`, with a [Conventional Commits](https://www.conventionalcommits.org) title (`feat: …`, `fix: …`, `feat!: …` for a breaking change; `docs`, `test`, `ci`, `chore`, `refactor`, `build`, `perf`, `style`, `revert` too). Squash merges keep the title as the commit message. Checks run on your machine, not on GitHub: the pre-push hook runs `tool/check` and checks the titles of the commits you push (see [Testing](#testing)).
 2. When `dev` is ready, open a pull request from `dev` to `main`. The `Release gate` check allows only `dev` (or the release pull request) into `main`, and its QA job waits for a reviewer in the `qa` environment. Merge it with a merge commit, not a squash, so each change keeps its own title.
 3. On `main`, release-please keeps a release pull request open with the next version (SemVer from the titles: `feat` bumps the minor, `fix` the patch; before 1.0 a breaking change bumps the minor) in `pyproject.toml`, `uv.lock` and `ngome.__version__`, and the `CHANGELOG.md` entry. Merging it tags `vX.Y.Z` and merges the release back into `dev`.
 
@@ -178,20 +220,20 @@ tests/      pytest suite (SQLite in a temp file; no Postgres needed)
 
 ## Testing
 
-```sh
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy
-uv run pytest
-```
-
-The object storage tests skip unless `NGOME_TEST_S3_ENDPOINT_URL` is set. With the compose MinIO running:
+GitHub runs no checks; they run on your machine. Enable the pre-push hook once per clone:
 
 ```sh
-NGOME_TEST_S3_ENDPOINT_URL=http://localhost:9000 uv run pytest -m object_storage
+tool/setup-hooks
 ```
 
-CI also runs those against MinIO, applies the migrations to Postgres, checks they match the models and builds the Docker image.
+`tool/check` runs everything: ruff lint and format, mypy, the unit tests, the migrations on Postgres (upgrade, `alembic check` that models and migrations agree, downgrade, concurrent migrations), the object storage tests on MinIO and the Docker build. `tool/check --fast` runs only lint, format, types and unit tests. The unit tests always run; for the rest start the services first:
+
+```sh
+docker compose up -d --wait db minio   # or: tool/check --up
+tool/check
+```
+
+Without them those steps are skipped with a notice. The migration steps use a scratch `ngome_check` database on the compose Postgres, so your development data is untouched; `NGOME_CHECK_POSTGRES_URL` and `NGOME_TEST_S3_ENDPOINT_URL` point them elsewhere.
 
 ## Not done yet
 

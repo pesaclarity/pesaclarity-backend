@@ -45,7 +45,7 @@ Merge to `main` (README, "Branches and releases"). To watch the build: `gcloud b
    - A secret gets a new Secret Manager version only when its value changed.
    - Removing a variable or secret in GitHub removes it from Cloud Run on the next sync.
 
-The workflow names each secret it reads: the six secret settings the server has (database URL, JWT secret, contact pepper, SMTP password and the two R2 keys). A new secret setting has to be added to `.github/workflows/sync-settings.yml` as well.
+The workflow names each secret it reads: the eight secret settings the server has (database URL, JWT secret, contact pepper, SMTP password, the two R2 keys, the admin token and the app status signing seed). A new secret setting has to be added to `.github/workflows/sync-settings.yml` as well.
 
 GitHub may hold a Sync settings run for approval when it flags a workflow as potentially malicious. Approve the run on its page in the Actions tab, signed in with write access.
 
@@ -193,7 +193,10 @@ gh secret set NGOME_DATABASE_URL --env production    # the Neon direct connectio
 gh secret set NGOME_SMTP_PASSWORD --env production   # the Brevo SMTP key
 python3 -c 'import secrets; print(secrets.token_urlsafe(48), end="")' | gh secret set NGOME_JWT_SECRET --env production
 python3 -c 'import secrets; print(secrets.token_urlsafe(48), end="")' | gh secret set NGOME_CONTACT_PEPPER --env production
+python3 -c 'import secrets; print(secrets.token_urlsafe(48), end="")' | gh secret set NGOME_ADMIN_TOKEN --env production
 ```
+
+The app status signing key (README, "App status and notices"): make a pair with `uv run ngome-app-status-key`, set the seed with `gh secret set NGOME_APP_STATUS_SIGNING_SEED --env production` (paste it when asked) and put the public key in the app's pinned list. Keep an offline copy of the seed: a new seed needs an app release that pins its public key first.
 
 After the first sync, Secret Manager holds the contact pepper as version 1. Keep an offline copy as well.
 

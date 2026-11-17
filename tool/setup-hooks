@@ -1,0 +1,6 @@
+#!/bin/sh
+# Use the repository's git hooks (.githooks/). Run once per clone; safe to repeat.
+set -eu
+cd "$(dirname "$0")/.."
+git config core.hooksPath .githooks
+echo "Git hooks enabled: pre-push runs tool/check and checks commit titles (bypass: git push --no-verify)."
