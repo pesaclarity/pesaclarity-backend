@@ -5,6 +5,8 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 # Release notes and version numbers come from these titles (release-please).
+# Pull requests are rebase-merged, so each pushed commit lands on dev as is;
+# fixup!/squash!/amend! titles fail the pattern on purpose.
 pattern='^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert|style)(\([a-z0-9-]+\))?!?: [^ ].*$'
 
 bad=0
@@ -30,6 +32,8 @@ if [ "$bad" = 1 ]; then
 Start each title with a type, e.g. 'feat: add debts screen', 'fix: keep footers out of rows'
 or 'feat!: change the backup format'. Types: feat, fix, perf, refactor, docs, test, build,
 ci, chore, revert, style. Reword with: git rebase -i <base> (choose "reword").
+Pull requests are rebase-merged, so instead of a fixup!/squash!/amend! commit write a
+Conventional Commit, e.g. 'refactor: name the code request limits'.
 MSG
   exit 1
 fi
