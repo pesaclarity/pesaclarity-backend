@@ -187,9 +187,9 @@ Before enabling it: enable `playintegrity.googleapis.com` in the Cloud project t
 
 Every push to `main` deploys, so `main` takes only tested, approved changes.
 
-1. Pull requests go to `dev`, with a [Conventional Commits](https://www.conventionalcommits.org) title (`feat: …`, `fix: …`, `feat!: …` for a breaking change; `docs`, `test`, `ci`, `chore`, `refactor`, `build`, `perf`, `style`, `revert` too). Squash merges keep the title as the commit message. Checks run on your machine, not on GitHub: the pre-push hook runs `tool/check` and checks the titles of the commits you push (see [Testing](#testing)).
+1. Pull requests go to `dev` and are rebase-merged, so every commit lands on `dev` as is and each needs a [Conventional Commits](https://www.conventionalcommits.org) title (`feat: …`, `fix: …`, `feat!: …` for a breaking change; `docs`, `test`, `ci`, `chore`, `refactor`, `build`, `perf`, `style`, `revert` too). Use `feat` or `fix` for changes users see, and a hidden type (`refactor`, `test`, `style`, `chore`, `docs`, `ci`, `build`) for review follow-ups they don't, as new commits rather than `fixup!` ones. Checks run on your machine, not on GitHub: the pre-push hook runs `tool/check` and checks the titles of the commits you push (see [Testing](#testing)).
 2. When `dev` is ready, open a pull request from `dev` to `main`. The `Release gate` check allows only `dev` (or the release pull request) into `main`, and its QA job waits for a reviewer in the `qa` environment. Merge it with a merge commit, not a squash, so each change keeps its own title.
-3. On `main`, release-please keeps a release pull request open with the next version (SemVer from the titles: `feat` bumps the minor, `fix` the patch; before 1.0 a breaking change bumps the minor) in `pyproject.toml`, `uv.lock` and `ngome.__version__`, and the `CHANGELOG.md` entry. Merging it tags `vX.Y.Z` and merges the release back into `dev`.
+3. On `main`, release-please keeps a release pull request open with the next version (SemVer from the commit titles: `feat` bumps the minor, `fix` the patch; before 1.0 a breaking change bumps the minor) in `pyproject.toml`, `uv.lock` and `ngome.__version__`, and the `CHANGELOG.md` entry. Merging it tags `vX.Y.Z` and merges the release back into `dev`.
 
 ## Deploying to Cloud Run
 
