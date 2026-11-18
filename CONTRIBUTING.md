@@ -35,6 +35,7 @@ Then every `git push` runs the full `tool/check` (lint, format, mypy, unit tests
 ## Commits and pull requests
 
 - Small, focused pull requests against `dev`, with a short description of what changed and why. `main` takes only `dev` and release pull requests (see [Branches and releases](README.md#branches-and-releases)).
-- Pull request titles follow [Conventional Commits](https://www.conventionalcommits.org): `feat: add rate limit to code requests`, `fix: …`, `feat!: …` for a breaking change. They set the next version and the changelog.
-- Commit messages: one short Conventional Commits line, e.g. `feat: add rate limit to code requests`. The pre-push hook rejects other titles (merge commits excepted).
+- Every commit follows [Conventional Commits](https://www.conventionalcommits.org): one short line such as `feat: add rate limit to code requests`, `fix: …`, `feat!: …` for a breaking change. Pull requests into `dev` are rebase-merged, so each commit lands on `dev` as is and the commits set the next version and the changelog. The pre-push hook rejects other titles (merge commits excepted).
+- Changes users can see are `feat` or `fix`. Review follow-ups they don't see use a hidden type (`refactor`, `test`, `style`, `chore`, `docs`, `ci`, `build`) so the changelog stays clean. Write them as new commits: pushed history is never rewritten, so no `fixup!`, `squash!` or `amend!` commits.
+- One logical change per commit.
 - New dependencies need a reason in the pull request.
