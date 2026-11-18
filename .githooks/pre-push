@@ -8,6 +8,8 @@ cd "$(git rev-parse --show-toplevel)"
 # Pull requests are rebase-merged, so each pushed commit lands on dev as is;
 # fixup!/squash!/amend! titles fail the pattern on purpose.
 pattern='^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert|style)(\([a-z0-9-]+\))?!?: [^ ].*$'
+# git revert's own titles, nested too (Revert "Revert "...""); release-please reads them.
+revert='^Revert ".+"$'
 
 bad=0
 # Git passes one line per ref being pushed: <local ref> <local sha> <remote ref> <remote sha>.
@@ -21,7 +23,7 @@ while read -r _ local_sha _ remote_sha; do
   # Merge commits keep git's own title ("Merge branch ...").
   while IFS= read -r line; do
     title="${line#* }"
-    if [[ ! "$title" =~ $pattern ]]; then
+    if [[ ! "$title" =~ $pattern && ! "$title" =~ $revert ]]; then
       echo "Commit ${line%% *} title is not a Conventional Commit: $title" >&2
       bad=1
     fi
