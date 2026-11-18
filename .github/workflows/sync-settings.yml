@@ -18,7 +18,7 @@ concurrency:
 jobs:
   sync:
     name: Check and apply
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
