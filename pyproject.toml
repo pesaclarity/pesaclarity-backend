@@ -10,7 +10,10 @@ dependencies = [
     "alembic>=1.20.1",
     "argon2-cffi>=25.1.0",
     "asyncpg>=0.32.0",
-    "cbor2>=6.1.5",
+    # 5.9 is the newest cbor2 that installs on an Intel Mac without a Rust build: 6.x ships
+    # no macosx x86_64 wheel, 5.9 still ships a pure-Python one. 5.9.0 also fixes
+    # CVE-2025-68131 and CVE-2026-26209, so nothing older will do.
+    "cbor2>=5.9.0,<6",
     "email-validator>=2.2",
     "fastapi>=0.162.0",
     "httpx>=0.28.1",

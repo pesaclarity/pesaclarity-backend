@@ -24,6 +24,7 @@ from ngome.admin.filters import parse as parse_filters
 from ngome.admin.web import (
     COOKIE,
     SIGN_IN,
+    STATIC,
     Fresh,
     Me,
     dashboard_on,
@@ -46,6 +47,15 @@ On = Depends(dashboard_on)
 web = APIRouter(include_in_schema=False)
 web.include_router(signin.router)
 web.include_router(security.router)
+
+
+@web.get("/favicon.ico", dependencies=[On])
+async def favicon() -> Response:
+    """The dashboard's icon at the site root, where browsers look for it unasked."""
+    icon = (STATIC / "favicon.ico").read_bytes()
+    return Response(icon, media_type="image/vnd.microsoft.icon")
+
+
 pages = APIRouter(prefix="/admin", include_in_schema=False)
 api = APIRouter(prefix="/v1/admin", tags=["admin"])
 
