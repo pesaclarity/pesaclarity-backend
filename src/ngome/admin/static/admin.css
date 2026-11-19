@@ -184,7 +184,7 @@ details.table table { margin-top: 8px; }
 form.inline { display: inline; }
 
 /* Sign-in. */
-.signin { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.signin { min-height: 100vh; max-width: none; display: grid; place-items: center; padding: 24px 16px; }
 .signin .card { max-width: 400px; width: 100%; padding: 28px; }
 .btn { display: flex; justify-content: center; align-items: center; gap: 10px; width: 100%; min-height: 48px; background: var(--brand); color: #fff; border: 0; border-radius: 999px; font: 600 15px Inter; margin-top: 22px; }
 .btn svg { fill: none; stroke: #fff; width: 20px; height: 20px; stroke-width: 2; }
