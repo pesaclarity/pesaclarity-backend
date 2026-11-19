@@ -24,10 +24,22 @@ MAX_CSV_BYTES = 5 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
+class FileDownloads:
+    name: str
+    n: int
+    previous: int | None  # the window before, if the snapshot goes back that far
+
+
+@dataclass(frozen=True, slots=True)
 class Downloads:
     as_of: date
     total: int
-    by_file: list[tuple[str, int]]
+    previous_total: int | None
+    files: list[FileDownloads]
+
+    @property
+    def by_file(self) -> list[tuple[str, int]]:
+        return [(f.name, f.n) for f in self.files]
 
 
 class DownloadsSource(Protocol):
@@ -58,7 +70,8 @@ class HttpDownloadsSource:
 
 
 def summarise(text: str, days: int = 30) -> Downloads | None:
-    """Downloads per file name in the ``days`` before the newest snapshot, across releases.
+    """Downloads per file name in the ``days`` before the newest snapshot, across releases,
+    and in the ``days`` before that when the snapshot goes back far enough.
 
     The counters are running totals, so a file's downloads in the window are its newest total
     less its total on the day the window starts (zero if it was not out yet).
@@ -74,12 +87,31 @@ def summarise(text: str, days: int = 30) -> Downloads | None:
     if not totals:
         return None
     as_of = max(day for series in totals.values() for day in series)
+    first = min(day for series in totals.values() for day in series)
     start = as_of - timedelta(days=days)
+    earlier = start - timedelta(days=days)
+    covers_previous = first <= earlier
+
+    def at(series: dict[date, int], when: date) -> int:
+        before = [day for day in series if day <= when]
+        return series[max(before)] if before else 0
+
     by_file: dict[str, int] = defaultdict(int)
+    previous: dict[str, int] = defaultdict(int)
     for (_, name), series in totals.items():
-        newest = series[max(series)]
-        before = [day for day in series if day <= start]
-        base = series[max(before)] if before else 0
-        by_file[name] += max(newest - base, 0)
-    ordered = sorted(by_file.items(), key=lambda item: (-item[1], item[0]))
-    return Downloads(as_of=as_of, total=sum(by_file.values()), by_file=ordered)
+        base = at(series, start)
+        by_file[name] += max(series[max(series)] - base, 0)
+        previous[name] += max(base - at(series, earlier), 0)
+    files = sorted(
+        (
+            FileDownloads(name, n, previous[name] if covers_previous else None)
+            for name, n in by_file.items()
+        ),
+        key=lambda f: (-f.n, f.name),
+    )
+    return Downloads(
+        as_of=as_of,
+        total=sum(by_file.values()),
+        previous_total=sum(previous.values()) if covers_previous else None,
+        files=files,
+    )

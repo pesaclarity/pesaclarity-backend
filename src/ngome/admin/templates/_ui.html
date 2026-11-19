@@ -1,0 +1,21 @@
+{% macro icon(name) %}<svg viewBox="0 0 24 24" aria-hidden="true">{% if name == "overview" %}<path d="M4 13h6V4H4zM14 20h6v-9h-6zM14 4v4h6V4zM4 20h6v-4H4z"/>{% elif name == "installs" %}<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18h2"/>{% elif name == "crashes" %}<path d="M12 3 2.5 20h19z"/><path d="M12 10v4M12 17v.5"/>{% elif name == "notices" %}<path d="M5 9a7 7 0 0 1 14 0v4l2 3H3l2-3z"/><path d="M10 19a2 2 0 0 0 4 0"/>{% elif name == "learning" %}<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8 7.5 11 16M16 7.5 13 16M8.5 6h7"/>{% elif name == "tick" %}<path d="M5 12.5 10 17 19 7"/>{% endif %}</svg>{% endmacro %}
+
+{% macro cell(s) %}{% if s is none %}{% elif s.n is none and s.why == "secondary" %}<span class="hidden-cell" title="Hidden so a cell under 10 cannot be worked out from the total">hidden</span>{% elif s.n is none %}<span class="lt10">&lt;10</span>{% else %}{{ "{:,}".format(s.n) }}{% endif %}{% endmacro %}
+
+{% macro kpi(t) %}<div class="card kpi{% if t.lead %} lead{% endif %}{% if t.wordy %} wordy{% endif %}"><div class="label">{{ t.label }}</div><div class="fig">{{ t.value }}</div><div class="note">{% if t.delta %}<span class="delta">{{ t.delta }}</span>{% endif %}{{ t.note }}</div></div>{% endmacro %}
+
+{% macro bar_rows(rows, share=True) %}{% for row in rows %}<tr><td{% if row.mono %} class="mono"{% endif %}>{{ row.label }}</td><td class="barcell"><div class="track{% if row.n is none %} hid{% endif %}"><i class="w{{ row.width }}{% if row.lead %} s1{% endif %}"></i></div></td><td class="n">{{ cell(row.shown) }}</td>{% if share %}<td class="n muted hide-s">{{ row.share }}</td>{% endif %}</tr>{% endfor %}{% endmacro %}
+
+{% macro menu(label, current, options) %}<details class="menu-pick"><summary class="pick"><b>{{ label }}</b> {{ current }}</summary><div class="menu">{% for href, text, on in options %}<a href="{{ href }}"{% if on %} class="on" aria-current="true"{% endif %}>{{ text }}</a>{% endfor %}</div></details>{% endmacro %}
+
+{% macro seg(label, options) %}<div class="seg" role="group" aria-label="{{ label }}">{% for href, text, on in options %}<a href="{{ href }}"{% if on %} class="on" aria-current="true"{% endif %}>{{ text }}</a>{% endfor %}</div>{% endmacro %}
+
+{% macro notes(f) %}{% if f.notes %}<div class="banner notes" role="status"><span aria-hidden="true">ⓘ</span><div>{% for n in f.notes %}{{ n }} {% endfor %}</div></div>{% endif %}{% endmacro %}
+
+{% macro how(country_on) %}<section class="card how mt" id="how"><h2>How it’s counted</h2><ul>
+<li>Counts are of installs, not people: a reinstall or a second phone counts twice. Phones with counting off are not in them.</li>
+<li>Any count under 10 shows as <span class="ex"><b>&lt;10</b></span>. When only one cell is hidden, the next smallest shows as <i>hidden</i>, so the total cannot give it away. Sums beside a table follow the same rule.</li>
+<li>One dimension at a time: version, build, or (by month only) country. Never country by version or build.</li>
+<li>Crash reports are sent only when the person says yes, built from an allow-list of fields, kept 90 days, and not linked to the monthly count.</li>
+<li>No per-person data: no ids, addresses, accounts or times of day are stored or shown.</li>
+{% if country_on %}<li>Country comes from a database kept on the server (<a href="{{ attribution_url }}">{{ attribution }}</a>, CC BY 4.0); the address is used for the lookup and then dropped.</li>{% endif %}</ul></section>{% endmacro %}

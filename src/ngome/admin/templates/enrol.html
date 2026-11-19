@@ -1,12 +1,9 @@
-{% set title = "Add a passkey" %}{% include "_head.html" %}<body><div class="signin"><div class="card">
-<div class="brand">{% include "_logo.html" %} Pesa Clarity <small>admin</small></div>
-<h1 class="mt28">Add a passkey</h1>
-{% if token %}
-<p class="sub mt8">This link adds one passkey to the dashboard's allow-list, then stops working. Use your phone's screen lock or your security key.</p>
-<button class="btn" type="button" data-action="enrol" data-token="{{ token }}"><svg width="20" height="20" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-3 3 2 2m-5 1 2 2"/></svg> Add a passkey</button>
+{% from "_ui.html" import icon %}{% set title = "Add a passkey" %}{% include "_head.html" %}<body><main class="signin"><div>
+<div class="card"><div class="brand">{% include "_logo.html" %} Pesa Clarity <small>admin</small></div>
+<h1>Add a passkey</h1>
+{% if token %}<p class="muted lead-text">This link adds one passkey to the dashboard’s allow-list, then stops working. Use your phone’s screen lock or your security key.</p>
+<button class="btn" type="button" data-action="enrol" data-token="{{ token }}"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-3 3 2 2m-5 1 2 2"/></svg> Add a passkey</button>
 <p class="err" id="error" role="alert"></p>
-<ul class="facts"><li>Add two, so one can be lost.</li></ul>
-{% else %}
-<p class="sub mt8">This link has been used or has expired. Make a new one from a terminal with the server's admin token.</p>
-{% endif %}
-</div></div></body></html>
+<ul class="facts"><li>{{ icon("tick") }}<span>Add two, so one can be lost.</span></li></ul>
+{% else %}<p class="muted lead-text">This link has been used or has expired. Make a new one from a terminal with the server’s admin token.</p>{% endif %}
+</div></div></main></body></html>

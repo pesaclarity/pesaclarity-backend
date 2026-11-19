@@ -1,10 +1,9 @@
-{% set title = "Sign in" %}{% include "_head.html" %}<body><div class="signin"><div class="card">
-<div class="brand">{% include "_logo.html" %} Pesa Clarity <small>admin</small></div>
-<h1 class="mt28">Sign in</h1>
-<p class="sub mt8">Only the owner's passkeys can open this page. Use your phone's screen lock or your security key.</p>
-<button class="btn" type="button" data-action="sign-in"><svg width="20" height="20" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-3 3 2 2m-5 1 2 2"/></svg> Sign in with a passkey</button>
+{% from "_ui.html" import icon %}{% set title = "Sign in" %}{% include "_head.html" %}<body><main class="signin"><div>
+<div class="card"><div class="brand">{% include "_logo.html" %} Pesa Clarity <small>admin</small></div>
+<h1>Sign in</h1><p class="muted lead-text">Use the passkey on your phone or security key. Only the owner’s passkeys can open this dashboard.</p>
+<button class="btn" type="button" data-action="sign-in"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-3 3 2 2m-5 1 2 2"/></svg> Sign in with a passkey</button>
 <p class="err" id="error" role="alert"></p>
-<ul class="facts"><li>No password, no email code, no Google sign-in.</li>
-<li>A cookie is set only after you sign in, and lasts 12 hours.</li>
-<li>Lost every passkey? Enrol a new one from a terminal with the server's admin token.</li></ul>
-</div></div></body></html>
+<ul class="facts"><li>{{ icon("tick") }}<span>No password, email code or Google sign-in.</span></li>
+<li>{{ icon("tick") }}<span>A cookie is set only after you sign in. It lasts 12 hours.</span></li>
+<li>{{ icon("tick") }}<span>Lost every passkey? Enrol a new one from a terminal with the server’s admin token.</span></li></ul></div>
+<p class="muted under">Counts and crash reports only. Nothing here names a person.</p></div></main></body></html>

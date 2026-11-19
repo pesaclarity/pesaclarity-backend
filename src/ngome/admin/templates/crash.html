@@ -1,21 +1,22 @@
-{% extends "base.html" %}{% set page_title = data.group.error %}
+{% extends "base.html" %}{% from "_ui.html" import kpi, menu, seg, notes, bar_rows %}{% set page_title = data.group.error %}{% set f = data.filters %}{% set path = "/admin/crashes/" ~ data.group.id %}
 {% block main %}
-<div class="crumb"><a href="/admin/crashes">Crashes</a> / {{ data.group.error }}</div>
-<div class="head"><div><h1>{{ data.title }}</h1><div class="sub">{% if data.group.decoded_location %}{{ data.group.decoded_location }} · {% endif %}first seen {{ data.chart_first }} · last seen {{ data.group.last_seen.day }} {{ data.group.last_seen.strftime("%b") }}</div></div>
+<div class="crumb"><a href="/admin/crashes?{{ f.carried() }}">Crashes</a> / {{ data.group.error }}</div>
+<div class="head"><div><h1>{{ data.group.error }}{% if data.is_new %} <span class="tag red h1-tag">new</span>{% endif %}</h1>
+{% if data.group.decoded_function %}<div class="sub mono fn-sub">{{ data.group.decoded_function }}</div><div class="sub">{{ data.group.decoded_location }}{% if data.decoded %} · decoded with the release’s symbols{% endif %}</div>{% else %}<div class="sub">Not decoded yet: the release’s symbols are not on the server.</div>{% endif %}</div></div>
+<div class="filters">{{ seg("Period", options(path, f, "days", [(30, "30 d"), (90, "90 d"), (None, "Since first seen")])) }}{{ menu("Build", build_names[f.build] if f.build else "All builds", options(path, f, "build", build_items, platform=None)) }}{{ menu("Platform", platform_names[f.platform] if f.platform else "All", options(path, f, "platform", platform_items, build=None)) }}{% if f.version %}<a class="pick" href="{{ path }}?{{ f.query(version=None) }}"><b>Version</b> {{ f.version }} ✕</a>{% endif %}</div>
+{{ notes(f) }}
+<div class="grid kpis">{% for t in data.tiles %}{{ kpi(t) }}{% endfor %}</div>
+<div class="grid g11 mt">
+ <section class="card" aria-labelledby="perday-h"><div class="card-h"><div><h2 id="perday-h">Reports per day</h2><div class="sub">{% if f.days %}Last {{ f.days }} days{% else %}Since first seen, up to 90 days{% endif %}. Days with none are a thin line.</div></div></div>
+ {% if data.chart %}{{ data.chart }}{% else %}<p class="sub">No reports in this period: reports are deleted after 90 days, and the group keeps only its counts.</p>{% endif %}</section>
+ <section class="card" aria-labelledby="ver-h"><div class="card-h"><div><h2 id="ver-h">Versions affected</h2><div class="sub">Reports, and reports per 1,000 installs on that version this month.</div></div></div>
+ <table><caption class="sr">Reports by version</caption><tbody>{% for v in data.versions %}<tr><td>{{ v.version }}</td><td class="barcell"><div class="track"><i class="w{{ v.width }} s1"></i></div></td><td class="n">{% if v.reports %}{{ v.reports }}{% else %}<span class="faint">none</span>{% endif %}</td><td class="n muted">{{ v.rate }}</td></tr>{% endfor %}</tbody></table></section>
 </div>
-<div class="grid tiles">
- <div class="card lead"><div class="label">Reports</div><div class="num">{{ data.group.reports }}</div><div class="delta">{{ data.lead_delta }}</div></div>
- <div class="card"><div class="label">Builds</div><div class="num facts-num">{% for line in data.builds %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div></div>
- <div class="card"><div class="label">{{ data.system_label }}</div><div class="num facts-num">{% for line in data.systems %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div></div>
- <div class="card"><div class="label">CPU</div><div class="num facts-num">{% for line in data.cpus %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div></div>
-</div>
-<div class="card mt16"><h2>Stack</h2><p class="sub">{{ data.stack_note }}</p><pre>{% for frame in data.stack %}{{ frame }}
-{% endfor %}</pre></div>
-<div class="grid half mt16">
- <div class="card"><h2>Reports per day</h2><p class="sub">Since first seen{% if data.group.first_seen != data.group.last_seen %}, up to 90 days{% endif %}.</p>
- {{ data.chart }}</div>
- <div class="card"><h2>One report, as received</h2><p class="sub">Exactly what the phone sent. Kept 90 days.</p>
- {% if data.example %}<pre>{{ data.example }}</pre>
- <p class="note mt10">Received {{ data.group.last_seen.day }} {{ data.group.last_seen.strftime("%b") }} (the day only). No time, address, account or install id.</p>{% else %}<p class="sub">Its reports are older than 90 days and have been deleted.</p>{% endif %}</div>
-</div>
+<section class="card mt" aria-labelledby="stack-h"><div class="card-h"><div><h2 id="stack-h">Stack</h2><div class="sub">{% if data.decoded %}From the newest report, decoded on the server. Frames in our code are bold and marked.{% else %}Not decoded yet: the release’s symbols are not on the server, so these are offsets in the app’s instructions, as sent.{% endif %}</div></div></div>
+<ol class="stack">{% for fr in data.stack %}<li{% if fr.ours %} class="ours"{% endif %}><span class="i">{{ fr.index }}</span><span class="fn">{{ fr.function }}{% if fr.ours %}<span class="sr"> (our code)</span>{% endif %}</span><span class="loc">{{ fr.location }}</span></li>{% endfor %}</ol></section>
+{% if data.facets %}<section class="card mt" aria-labelledby="where-h"><div class="card-h"><div><h2 id="where-h">Where it happens</h2><div class="sub">Counts of reports, not people.</div></div></div>
+<div class="facets">{% for name, rows in data.facets %}<div><h3>{{ name }}</h3><table><tbody>{{ bar_rows(rows, share=False) }}</tbody></table></div>{% endfor %}</div></section>{% endif %}
+<section class="card mt" aria-labelledby="one-h"><div class="card-h"><div><h2 id="one-h">One report, as received</h2><div class="sub">{% if data.example %}Exactly the allow-listed fields the phone sent. Received {{ data.received }}; the day only.{% else %}Its reports are older than 90 days and have been deleted.{% endif %}</div></div></div>
+{% if data.example %}<pre class="json">{{ data.example }}</pre>{% endif %}
+<p class="foot-note">No message, amount, name, time, address, account or install id. Reports are deleted after 90 days; the group keeps its counts and dates for a year after it is last seen.</p></section>
 {% endblock %}

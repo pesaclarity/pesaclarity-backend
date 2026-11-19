@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% from "_ui.html" import how %}{% set page_title = "Learning" %}
+{% block main %}
+<div class="head"><div><h1>Federated learning</h1><div class="sub">Model updates trained on phones and combined on the server, never the data itself.</div></div></div>
+<div class="grid g21">
+<section class="card"><div class="card-h"><div><h2>Rounds</h2><div class="sub">From the aggregator, when it runs.</div></div><span class="tag">not running yet</span></div>
+<div class="empty"><h3>No rounds have been recorded</h3><p>Rounds, cohort sizes and the privacy spend show here once the aggregator stores them (ADR 0024, stage 5).</p></div></section>
+<section class="card"><div class="card-h"><div><h2>Settings</h2></div></div><dl class="kv"><dt>Smallest cohort</dt><dd>{{ fl_min_cohort }} phones</dd><dt>Aggregation</dt><dd>FedAvg under SecAgg+, with clipping on the phone</dd><dt>Privacy budget</dt><dd>Published with each model release</dd></dl></section>
+</div>
+{{ how(country_on) }}
+{% endblock %}
