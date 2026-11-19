@@ -2,7 +2,8 @@
 that enrol and remove passkeys under ``/v1/admin``.
 
 The dashboard is off (every route 404) until ``NGOME_ADMIN_ORIGIN`` is set. Pages need a
-session cookie from a passkey sign-in; every POST also checks ``Origin``.
+session cookie from a passkey sign-in; every POST also checks ``Origin`` against
+``Settings.admin_origins``, and the ceremonies use that origin's host as the relying party.
 """
 
 import uuid
@@ -45,10 +46,13 @@ def dashboard_on(settings: SettingsDep) -> None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
 
 
-def same_origin(request: Request, settings: SettingsDep) -> None:
-    """State-changing requests must come from the dashboard's own pages."""
-    if request.headers.get("origin") != settings.admin_origin:
+def same_origin(request: Request, settings: SettingsDep) -> str:
+    """State-changing requests must come from the dashboard's own pages, on one of its
+    origins. Returns that origin."""
+    origin = request.headers.get("origin")
+    if origin is None or origin not in settings.admin_origins:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Wrong origin")
+    return origin
 
 
 async def signed_in(request: Request, session: SessionDep) -> None:
@@ -58,6 +62,7 @@ async def signed_in(request: Request, session: SessionDep) -> None:
 
 On = Depends(dashboard_on)
 SameOrigin = Depends(same_origin)
+OriginDep = Annotated[str, SameOrigin]
 SignedIn = Depends(signed_in)
 
 
@@ -101,9 +106,9 @@ async def sign_in_page(request: Request) -> HTMLResponse:
 
 
 @web.post("/sign-in/options", dependencies=[On, SameOrigin])
-async def sign_in_options(session: SessionDep, settings: SettingsDep) -> JSONResponse:
+async def sign_in_options(session: SessionDep, origin: OriginDep) -> JSONResponse:
     try:
-        ceremony = await passkeys.sign_in_options(session, settings)
+        ceremony = await passkeys.sign_in_options(session, origin)
     except passkeys.PasskeyError:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Try again shortly") from None
     return JSONResponse({"challenge_id": ceremony.challenge_id, "options": ceremony.options})
@@ -111,11 +116,11 @@ async def sign_in_options(session: SessionDep, settings: SettingsDep) -> JSONRes
 
 @web.post("/sign-in/verify", dependencies=[On, SameOrigin])
 async def sign_in_verify(
-    body: CeremonyFinish, session: SessionDep, settings: SettingsDep
+    body: CeremonyFinish, session: SessionDep, settings: SettingsDep, origin: OriginDep
 ) -> JSONResponse:
     try:
         passkey = await passkeys.sign_in(
-            session, settings, challenge_id=body.challenge_id, credential=body.credential
+            session, origin, challenge_id=body.challenge_id, credential=body.credential
         )
     except passkeys.PasskeyError:
         log.warning("admin.sign_in_failed")
@@ -135,10 +140,10 @@ async def enrol_page(request: Request, token: str, session: SessionDep) -> HTMLR
 
 @web.post("/enrol/options", dependencies=[On, SameOrigin])
 async def enrol_options(
-    body: CeremonyStart, session: SessionDep, settings: SettingsDep
+    body: CeremonyStart, session: SessionDep, origin: OriginDep
 ) -> JSONResponse:
     try:
-        ceremony = await passkeys.registration_options(session, settings, body.token or "")
+        ceremony = await passkeys.registration_options(session, origin, body.token or "")
     except passkeys.PasskeyError:
         raise _FAILED from None
     return JSONResponse({"challenge_id": ceremony.challenge_id, "options": ceremony.options})
@@ -146,12 +151,12 @@ async def enrol_options(
 
 @web.post("/enrol/verify", dependencies=[On, SameOrigin])
 async def enrol_verify(
-    body: CeremonyFinish, session: SessionDep, settings: SettingsDep
+    body: CeremonyFinish, session: SessionDep, settings: SettingsDep, origin: OriginDep
 ) -> JSONResponse:
     try:
         passkey = await passkeys.register(
             session,
-            settings,
+            origin,
             token=body.token or "",
             challenge_id=body.challenge_id,
             credential=body.credential,
@@ -248,6 +253,8 @@ async def crash_page(request: Request, group_id: uuid.UUID, session: SessionDep)
 class EnrolmentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str = Field(min_length=1, max_length=64)
+    # Which of the dashboard's origins the link opens on; the passkey is bound to its host.
+    origin: str | None = Field(default=None, max_length=256)
 
 
 class EnrolmentOut(BaseModel):
@@ -272,10 +279,17 @@ async def create_enrolment(
     body: EnrolmentCreate, session: SessionDep, settings: SettingsDep
 ) -> EnrolmentOut:
     """A single-use link that registers one passkey, valid for ``admin_enrolment_minutes``.
-    Open it in the browser that holds the passkey (or on the phone whose screen lock is it)."""
+    Open it in the browser that holds the passkey (or on the phone whose screen lock is it).
+    ``origin`` picks which of the dashboard's origins it opens on (``admin_origin`` if unset)."""
+    origin = body.origin or settings.admin_origin
+    if origin not in settings.admin_origins:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "origin must be NGOME_ADMIN_ORIGIN or one of NGOME_ADMIN_EXTRA_ORIGINS",
+        )
     enrolment = await passkeys.mint_enrolment(session, settings, body.label)
     return EnrolmentOut(
-        url=f"{settings.admin_origin}/admin/enrol/{enrolment.token}",
+        url=f"{origin}/admin/enrol/{enrolment.token}",
         expires_at=enrolment.expires_at,
     )
 

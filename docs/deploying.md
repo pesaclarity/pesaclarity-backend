@@ -113,6 +113,15 @@ curl -X POST "$API/v1/admin/passkey-enrolments" -H "Authorization: Bearer $NGOME
 
 Passkeys are bound to the origin's host name: moving the dashboard to another host means enrolling again.
 
+To open it on another address as well, such as a custom domain mapped to the service, add that origin and enrol a passkey there, picking the address with `origin`:
+
+```sh
+gh variable set NGOME_ADMIN_EXTRA_ORIGINS --env production --body '["https://<other host>"]'
+gh workflow run "Sync settings"
+curl -X POST "$API/v1/admin/passkey-enrolments" -H "Authorization: Bearer $NGOME_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"label": "Phone, other host", "origin": "https://<other host>"}'
+```
+
 **Country.** Off until DB-IP Lite's CC BY 4.0 licence is confirmed on db-ip.com. Then build the image with `--build-arg DBIP_COUNTRY_LITE_MONTH=<YYYY-MM>` (add it to the Cloud Build trigger and `tool/cloudbuild.yaml`), set `NGOME_COUNTRY_LOOKUP_ENABLED=true` and `NGOME_COUNTRY_DB_PATH=/app/data/dbip-country-lite.mmdb`, and refresh the month in each month's first deploy.
 
 **The purge job** now also deletes closed counting periods, old crash reports and expired dashboard sessions, so point it at the new image after the deploy (see "After a deploy: the jobs' image").

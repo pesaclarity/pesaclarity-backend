@@ -196,7 +196,7 @@ Decoding offsets into our code's names needs each release's `--split-debug-info`
 
 The owner's read-only dashboard is served under `/admin`: monthly and daily active installs, versions and builds, notice reach, GitHub release downloads (read from `stats/downloads.csv` on the `stats` branch of pesaclarity/.github, public, `NGOME_DOWNLOADS_CSV_URL`), installs by country, the flood check, and crash groups with one report exactly as received. Pages are rendered on the server with charts as inline SVG; the only script is the passkey ceremony, and the fonts are served from the dashboard itself, so it makes no third-party requests. Every `/admin` response carries `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Notices are still sent with the admin token.
 
-It is off (every route `404`) until `NGOME_ADMIN_ORIGIN` is set to the dashboard's exact origin, such as `https://ngome-xxxx.a.run.app`; the passkeys are bound to its host name, so changing it later means enrolling again.
+It is off (every route `404`) until `NGOME_ADMIN_ORIGIN` is set to the dashboard's exact origin, such as `https://ngome-xxxx.a.run.app`; the passkeys are bound to its host name, so changing it later means enrolling again. To serve it on more addresses too (a custom domain beside the `run.app` one), list them in `NGOME_ADMIN_EXTRA_ORIGINS` as JSON, such as `["https://admin.example.org"]`. Each POST must come from one of these origins, and the ceremonies use that origin's host, so every address needs its own passkey.
 
 **Sign-in is by passkey only** (WebAuthn, with py_webauthn), with user verification, against an allow-list (`admin_passkeys`): no password, no email code, no Google. A successful sign-in sets a random session id in a `__Host-ngome_admin` cookie (`Secure`, `HttpOnly`, `SameSite=Strict`) for 12 hours (`NGOME_ADMIN_SESSION_HOURS`); the server keeps only its digest, and sign-out deletes it. Every POST also checks `Origin`.
 
@@ -207,7 +207,7 @@ curl -X POST "$API/v1/admin/passkey-enrolments" -H "Authorization: Bearer $NGOME
   -H 'Content-Type: application/json' -d '{"label": "Phone"}'
 ```
 
-It returns a single-use link, valid for 10 minutes (`NGOME_ADMIN_ENROLMENT_MINUTES`). Open it in the browser that holds the passkey, or on the phone whose screen lock will be it, and choose **Add a passkey**. Register two (say a phone and a security key), so one can be lost. `GET /v1/admin/passkeys` lists them and `DELETE /v1/admin/passkeys/{id}` removes one and ends its sessions. Lost every passkey? Enrol again the same way.
+Add `"origin": "<one of NGOME_ADMIN_EXTRA_ORIGINS>"` to the body for a link on another address. It returns a single-use link, valid for 10 minutes (`NGOME_ADMIN_ENROLMENT_MINUTES`). Open it in the browser that holds the passkey, or on the phone whose screen lock will be it, and choose **Add a passkey**. Register two (say a phone and a security key), so one can be lost. `GET /v1/admin/passkeys` lists them and `DELETE /v1/admin/passkeys/{id}` removes one and ends its sessions. Lost every passkey? Enrol again the same way.
 
 ### Backup storage
 
