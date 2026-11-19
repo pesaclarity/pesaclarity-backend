@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Self
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from email_validator import EmailNotValidError, validate_email
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,6 +16,7 @@ Environment = Literal["development", "test", "production"]
 _MIN_SECRET_LENGTH = 32
 _ED25519_SEED_BYTES = 32
 _ORIGIN_PATTERN = r"^https?://[a-z0-9.-]+(:\d+)?$"
+_AES_KEY_BYTES = 32
 
 
 class Settings(BaseSettings):
@@ -104,6 +106,15 @@ class Settings(BaseSettings):
     )
     app_status_cache_seconds: int = Field(default=300, ge=0, le=3600)
 
+    proxy_hops: int = Field(
+        default=1,
+        ge=0,
+        le=5,
+        description="Where the caller's address sits in X-Forwarded-For, counted from the "
+        "right: 1 on Cloud Run (Google appends it), 2 behind a Google load balancer. 0 uses "
+        "the socket's peer. Entries further left are written by the caller and never used.",
+    )
+
     # Counting active installs from the app status check-in (ADR 0024, ``ngome.counting``).
     counting_enabled: bool = Field(
         default=True,
@@ -141,9 +152,9 @@ class Settings(BaseSettings):
         description="Daily install totals and notice reach (13 months).",
     )
 
-    # The admin dashboard (``/admin``), opened only with an enrolled passkey. Both unset
-    # turn it off. ``admin_origin`` is the dashboard's exact origin, such as
-    # ``https://api.example.org``; the passkey's relying party id is its host.
+    # The admin dashboard (``/admin``, ADR 0024 and 0025): a username and password, then a
+    # second factor. Off until ``admin_origin`` is set, the dashboard's exact origin, such as
+    # ``https://api.example.org``; passkeys are bound to its host.
     # ``admin_extra_origins`` are more exact origins serving the same dashboard, as a JSON
     # list (a custom domain beside the run.app address). A passkey is bound to the host it
     # was added on, so each origin needs its own.
@@ -151,8 +162,39 @@ class Settings(BaseSettings):
     admin_extra_origins: list[Annotated[str, Field(pattern=_ORIGIN_PATTERN)]] = Field(
         default_factory=list
     )
-    admin_session_hours: int = Field(default=12, ge=1, le=24)
-    admin_enrolment_minutes: int = Field(default=10, ge=1, le=60)
+    admin_email: str | None = Field(
+        default=None,
+        max_length=254,
+        description="The owner's address for admin sign-in codes and security alerts. "
+        "Until it and admin_secret_key are set, the dashboard refuses sign-in and says so; "
+        "the rest of the server runs as usual.",
+    )
+    admin_secret_key: SecretStr | None = Field(
+        default=None,
+        description="Base64 of 32 random bytes that encrypt the authenticator secret "
+        "(AES-256-GCM). Needed for dashboard sign-in. Losing it means setting up the "
+        "authenticator again (the starter command with reset).",
+    )
+
+    @property
+    def admin_sign_in_ready(self) -> bool:
+        """Whether the dashboard has what sign-in needs: its origin, email and key."""
+        return None not in (self.admin_origin, self.admin_email, self.admin_secret_key)
+
+    admin_session_hours: int = Field(default=8, ge=1, le=24)
+    admin_idle_minutes: int = Field(default=30, ge=5, le=240)
+    admin_reauth_minutes: int = Field(default=10, ge=1, le=60)
+    admin_starter_hours: int = Field(default=24, ge=1, le=72)
+    admin_pending_minutes: int = Field(default=5, ge=1, le=15)
+    # Limits (ADR 0025 §4). A pause doubles with each lockout in 24 hours, up to a day.
+    admin_pause_minutes: int = Field(default=15, ge=1, le=240)
+    admin_password_max_failures: int = Field(default=5, ge=3, le=50)
+    admin_password_known_max_failures: int = Field(default=10, ge=3, le=50)
+    admin_address_max_failures: int = Field(default=20, ge=5, le=500)
+    admin_code_max_failures: int = Field(default=5, ge=3, le=10)
+    admin_user_code_max_failures: int = Field(default=10, ge=3, le=100)
+    admin_email_codes_per_day: int = Field(default=10, ge=1, le=50)
+    admin_alert_failures_per_hour: int = Field(default=200, ge=10, le=100_000)
     downloads_csv_url: str | None = Field(
         default="https://raw.githubusercontent.com/pesaclarity/.github/stats/stats/downloads.csv",
         description="GitHub's daily download counters, read for the dashboard. Unset hides "
@@ -266,6 +308,22 @@ class Settings(BaseSettings):
             not origin.startswith("https://") for origin in self.admin_origins
         ):
             raise ValueError("admin_origin and admin_extra_origins must be https in production")
+        return self
+
+    @model_validator(mode="after")
+    def _check_admin(self) -> Self:
+        if self.admin_email is not None:
+            try:
+                validate_email(self.admin_email, check_deliverability=False)
+            except EmailNotValidError as exc:
+                raise ValueError("admin_email is not a valid email address") from exc
+        if self.admin_secret_key is not None:
+            try:
+                key = base64.b64decode(self.admin_secret_key.get_secret_value(), validate=True)
+            except binascii.Error as exc:
+                raise ValueError("admin_secret_key must be base64") from exc
+            if len(key) != _AES_KEY_BYTES:
+                raise ValueError("admin_secret_key must be 32 bytes, base64-encoded")
         return self
 
     @model_validator(mode="after")

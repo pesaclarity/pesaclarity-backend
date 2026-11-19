@@ -1,9 +1,9 @@
-"""The dashboard's pages and passkey ceremonies under ``/admin``, and the admin-token routes
-that enrol and remove passkeys under ``/v1/admin``.
+"""The dashboard's pages and CSVs under ``/admin``, and the admin-token routes under
+``/v1/admin``: the starter command, the address check, and listing or removing passkeys.
 
 The dashboard is off (every route 404) until ``NGOME_ADMIN_ORIGIN`` is set. Pages need a
-session cookie from a passkey sign-in; every POST also checks ``Origin`` against
-``Settings.admin_origins``, and the ceremonies use that origin's host as the relying party.
+completed sign-in (ADR 0025); CSVs also need a fresh second factor. Sign-in itself is in
+:mod:`ngome.admin.signin`, the Security page in :mod:`ngome.admin.security`.
 """
 
 import asyncio
@@ -11,193 +11,47 @@ import csv
 import io
 import uuid
 from datetime import datetime
-from importlib import resources
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from ngome.admin import passkeys, views
+from ngome.admin import accounts, audit, passkeys, security, signin, views
 from ngome.admin.downloads import DownloadsSource, summarise
-from ngome.admin.filters import (
-    BUILD_ITEMS,
-    BUILD_NAMES,
-    PLATFORM_ITEMS,
-    PLATFORM_NAMES,
-    Filters,
-    month_items,
-    options,
-)
+from ngome.admin.filters import Filters
 from ngome.admin.filters import parse as parse_filters
+from ngome.admin.web import (
+    COOKIE,
+    SIGN_IN,
+    Fresh,
+    Me,
+    dashboard_on,
+    mail_of,
+    shell_context,
+    templates,
+)
 from ngome.api.deps import SessionDep, SettingsDep
 from ngome.appstatus.router import AdminDep
+from ngome.core.client import client_address
 from ngome.core.logging import get_logger
 from ngome.core.security import utcnow
-from ngome.counting.country import ATTRIBUTION, ATTRIBUTION_URL
 from ngome.fl.config import FLSettings
 
-COOKIE = "__Host-ngome_admin"
-SIGN_IN = "/admin/sign-in"
+__all__ = ["COOKIE", "SIGN_IN", "api", "templates", "web"]
 
 log = get_logger(__name__)
-templates = Jinja2Templates(directory=str(resources.files("ngome.admin") / "templates"))
-templates.env.globals.update(
-    number=views.number,
-    month_name=views.month_name,
-    short_day=views.short_day,
-    delta=views.delta,
-    build_names=BUILD_NAMES,
-    platform_names=PLATFORM_NAMES,
-    options=options,
-    build_items=BUILD_ITEMS,
-    platform_items=PLATFORM_ITEMS,
-    month_items=month_items,
-    attribution=ATTRIBUTION,
-    attribution_url=ATTRIBUTION_URL,
-)
-
-web = APIRouter(prefix="/admin", include_in_schema=False)
-api = APIRouter(prefix="/v1/admin", tags=["admin"])
-
-
-def dashboard_on(settings: SettingsDep) -> None:
-    if settings.admin_origin is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
-
-
-def same_origin(request: Request, settings: SettingsDep) -> str:
-    """State-changing requests must come from the dashboard's own pages, on one of its
-    origins. Returns that origin."""
-    origin = request.headers.get("origin")
-    if origin is None or origin not in settings.admin_origins:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Wrong origin")
-    return origin
-
-
-async def signed_in(request: Request, session: SessionDep) -> None:
-    if not await passkeys.session_is_valid(session, request.cookies.get(COOKIE)):
-        raise HTTPException(status.HTTP_303_SEE_OTHER, headers={"Location": SIGN_IN})
-
-
 On = Depends(dashboard_on)
-SameOrigin = Depends(same_origin)
-OriginDep = Annotated[str, SameOrigin]
-SignedIn = Depends(signed_in)
+
+web = APIRouter(include_in_schema=False)
+web.include_router(signin.router)
+web.include_router(security.router)
+pages = APIRouter(prefix="/admin", include_in_schema=False)
+api = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 
 def _page(request: Request, name: str, **context: Any) -> HTMLResponse:
     return templates.TemplateResponse(request, name, context)
-
-
-def _set_session(response: Response, session_id: str, expires: datetime) -> None:
-    response.set_cookie(
-        COOKIE,
-        session_id,
-        max_age=round((expires - utcnow()).total_seconds()),
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="strict",
-    )
-
-
-class CeremonyStart(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    token: str | None = Field(default=None, max_length=128)
-
-
-class CeremonyFinish(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    challenge_id: str = Field(max_length=128)
-    credential: dict[str, Any]
-    token: str | None = Field(default=None, max_length=128)
-
-
-_FAILED = HTTPException(status.HTTP_400_BAD_REQUEST, "That passkey did not work")
-
-
-# Sign-in and enrolment.
-
-
-@web.get("/sign-in", dependencies=[On])
-async def sign_in_page(request: Request) -> HTMLResponse:
-    return _page(request, "sign_in.html")
-
-
-@web.post("/sign-in/options", dependencies=[On, SameOrigin])
-async def sign_in_options(session: SessionDep, origin: OriginDep) -> JSONResponse:
-    try:
-        ceremony = await passkeys.sign_in_options(session, origin)
-    except passkeys.PasskeyError:
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Try again shortly") from None
-    return JSONResponse({"challenge_id": ceremony.challenge_id, "options": ceremony.options})
-
-
-@web.post("/sign-in/verify", dependencies=[On, SameOrigin])
-async def sign_in_verify(
-    body: CeremonyFinish, session: SessionDep, settings: SettingsDep, origin: OriginDep
-) -> JSONResponse:
-    try:
-        passkey = await passkeys.sign_in(
-            session, origin, challenge_id=body.challenge_id, credential=body.credential
-        )
-    except passkeys.PasskeyError:
-        log.warning("admin.sign_in_failed")
-        raise _FAILED from None
-    session_id, expires = await passkeys.start_session(session, settings, passkey)
-    log.info("admin.signed_in")
-    response = JSONResponse({"next": "/admin"})
-    _set_session(response, session_id, expires)
-    return response
-
-
-@web.get("/enrol/{token}", dependencies=[On])
-async def enrol_page(request: Request, token: str, session: SessionDep) -> HTMLResponse:
-    is_open = await passkeys.enrolment_is_open(session, token)
-    return _page(request, "enrol.html", token=token if is_open else None)
-
-
-@web.post("/enrol/options", dependencies=[On, SameOrigin])
-async def enrol_options(
-    body: CeremonyStart, session: SessionDep, origin: OriginDep
-) -> JSONResponse:
-    try:
-        ceremony = await passkeys.registration_options(session, origin, body.token or "")
-    except passkeys.PasskeyError:
-        raise _FAILED from None
-    return JSONResponse({"challenge_id": ceremony.challenge_id, "options": ceremony.options})
-
-
-@web.post("/enrol/verify", dependencies=[On, SameOrigin])
-async def enrol_verify(
-    body: CeremonyFinish, session: SessionDep, settings: SettingsDep, origin: OriginDep
-) -> JSONResponse:
-    try:
-        passkey = await passkeys.register(
-            session,
-            origin,
-            token=body.token or "",
-            challenge_id=body.challenge_id,
-            credential=body.credential,
-        )
-    except passkeys.PasskeyError:
-        log.warning("admin.enrol_failed")
-        raise _FAILED from None
-    session_id, expires = await passkeys.start_session(session, settings, passkey)
-    log.info("admin.passkey_enrolled")
-    response = JSONResponse({"next": "/admin"})
-    _set_session(response, session_id, expires)
-    return response
-
-
-@web.post("/sign-out", dependencies=[On, SameOrigin])
-async def sign_out(request: Request, session: SessionDep) -> Response:
-    await passkeys.end_session(session, request.cookies.get(COOKIE))
-    response = RedirectResponse(SIGN_IN, status_code=status.HTTP_303_SEE_OTHER)
-    response.delete_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="strict")
-    return response
 
 
 # Pages.
@@ -207,12 +61,14 @@ def _downloads_source(request: Request) -> DownloadsSource | None:
     return cast(DownloadsSource | None, request.app.state.downloads_source)
 
 
-async def _shell(session: SessionDep, settings: SettingsDep) -> dict[str, Any]:
+async def _shell(session: SessionDep, settings: SettingsDep, me: Me) -> dict[str, Any]:
     """What every signed-in page's frame shows: the count of new crash groups beside
-    Crashes, and whether the country lookup is on (for "How it's counted")."""
+    Crashes, whether the country lookup is on (for "How it's counted"), and how this
+    session signed in and when it ends."""
     return {
         "new_crash_groups": await views.new_groups(session, utcnow().date()),
         "country_on": settings.country_lookup_enabled,
+        **shell_context(me, settings),
     }
 
 
@@ -223,7 +79,7 @@ def _filters(request: Request, **options: Any) -> Filters:
     return parse_filters(request.query_params, **options)
 
 
-@web.get("", dependencies=[On, SignedIn])
+@pages.get("", dependencies=[On])
 async def overview_page(
     request: Request, session: SessionDep, settings: SettingsDep, shell: Shell
 ) -> HTMLResponse:
@@ -244,7 +100,7 @@ async def overview_page(
     return _page(request, "overview.html", nav="overview", data=data, **shell)
 
 
-@web.get("/installs", dependencies=[On, SignedIn])
+@pages.get("/installs", dependencies=[On])
 async def installs_page(
     request: Request, session: SessionDep, settings: SettingsDep, shell: Shell
 ) -> HTMLResponse:
@@ -252,14 +108,14 @@ async def installs_page(
     return _page(request, "installs.html", nav="installs", data=data, **shell)
 
 
-@web.get("/crashes", dependencies=[On, SignedIn])
+@pages.get("/crashes", dependencies=[On])
 async def crashes_page(request: Request, session: SessionDep, shell: Shell) -> HTMLResponse:
     filters = _filters(request, default_days=30, day_choices=views.CRASH_DAYS)
     data = await views.crashes(session, today=utcnow().date(), filters=filters)
     return _page(request, "crashes.html", nav="crashes", data=data, **shell)
 
 
-@web.get("/crashes/{group_id}", dependencies=[On, SignedIn])
+@pages.get("/crashes/{group_id}", dependencies=[On])
 async def crash_page(
     request: Request, group_id: uuid.UUID, session: SessionDep, shell: Shell
 ) -> HTMLResponse:
@@ -274,13 +130,13 @@ async def crash_page(
     return _page(request, "crash.html", nav="crashes", data=data, **shell)
 
 
-@web.get("/notices", dependencies=[On, SignedIn])
+@pages.get("/notices", dependencies=[On])
 async def notices_page(request: Request, session: SessionDep, shell: Shell) -> HTMLResponse:
     data = await views.notices_page(session, today=utcnow().date())
     return _page(request, "notices.html", nav="notices", notices=data, **shell)
 
 
-@web.get("/learning", dependencies=[On, SignedIn])
+@pages.get("/learning", dependencies=[On])
 async def learning_page(request: Request, shell: Shell) -> HTMLResponse:
     return _page(
         request,
@@ -307,20 +163,26 @@ def _csv(name: str, rows: list[list[str]]) -> Response:
     )
 
 
-@web.get("/installs.csv", dependencies=[On, SignedIn])
-async def installs_csv(request: Request, session: SessionDep, settings: SettingsDep) -> Response:
+@pages.get("/installs.csv", dependencies=[On])
+async def installs_csv(
+    request: Request, session: SessionDep, settings: SettingsDep, me: Fresh
+) -> Response:
     data = await views.installs(session, settings, today=utcnow().date(), filters=_filters(request))
     return _csv(f"installs-{data.dim}-{data.month:%Y-%m}.csv", views.installs_csv(data))
 
 
-@web.get("/adoption.csv", dependencies=[On, SignedIn])
-async def adoption_csv(request: Request, session: SessionDep, settings: SettingsDep) -> Response:
+@pages.get("/adoption.csv", dependencies=[On])
+async def adoption_csv(
+    request: Request, session: SessionDep, settings: SettingsDep, me: Fresh
+) -> Response:
     data = await views.installs(session, settings, today=utcnow().date(), filters=_filters(request))
     return _csv(f"versions-to-{data.month:%Y-%m}.csv", views.adoption_csv(data))
 
 
-@web.get("/monthly.csv", dependencies=[On, SignedIn])
-async def monthly_csv(request: Request, session: SessionDep, settings: SettingsDep) -> Response:
+@pages.get("/monthly.csv", dependencies=[On])
+async def monthly_csv(
+    request: Request, session: SessionDep, settings: SettingsDep, me: Fresh
+) -> Response:
     data = await views.overview(
         session,
         settings,
@@ -332,19 +194,20 @@ async def monthly_csv(request: Request, session: SessionDep, settings: SettingsD
     return _csv(f"monthly-installs-to-{data.month:%Y-%m}.csv", views.monthly_csv(data))
 
 
-# The admin token's routes: enrolling and removing passkeys from a terminal.
+# The admin token's routes, from a terminal.
 
 
-class EnrolmentCreate(BaseModel):
+class StarterCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    label: str = Field(min_length=1, max_length=64)
-    # Which of the dashboard's origins the link opens on; the passkey is bound to its host.
-    origin: str | None = Field(default=None, max_length=256)
+    username: str = Field(min_length=3, max_length=32)
+    reset: bool = False
 
 
-class EnrolmentOut(BaseModel):
-    url: str
+class StarterOut(BaseModel):
+    username: str
+    temporary_password: str
     expires_at: datetime
+    sign_in_url: str
 
 
 class PasskeyOut(BaseModel):
@@ -355,28 +218,56 @@ class PasskeyOut(BaseModel):
     last_used_at: datetime | None
 
 
-@api.post(
-    "/passkey-enrolments",
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[AdminDep, On],
-)
-async def create_enrolment(
-    body: EnrolmentCreate, session: SessionDep, settings: SettingsDep
-) -> EnrolmentOut:
-    """A single-use link that registers one passkey, valid for ``admin_enrolment_minutes``.
-    Open it in the browser that holds the passkey (or on the phone whose screen lock is it).
-    ``origin`` picks which of the dashboard's origins it opens on (``admin_origin`` if unset)."""
-    origin = body.origin or settings.admin_origin
-    if origin not in settings.admin_origins:
+@api.post("/starter-user", status_code=status.HTTP_201_CREATED, dependencies=[AdminDep, On])
+async def starter_user(
+    request: Request, body: StarterCreate, session: SessionDep, settings: SettingsDep
+) -> StarterOut:
+    """Make the admin user with a random temporary password, shown only in this answer and
+    good for one sign-in within ``admin_starter_hours``. Once a real password is set, this is
+    refused (409) unless ``reset`` is true, which also wipes the authenticator, the recovery
+    codes and every session (passkeys stay). The owner is emailed either way."""
+    if not settings.admin_sign_in_ready:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "origin must be NGOME_ADMIN_ORIGIN or one of NGOME_ADMIN_EXTRA_ORIGINS",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Set NGOME_ADMIN_EMAIL and NGOME_ADMIN_SECRET_KEY first (docs/deploying.md)",
         )
-    enrolment = await passkeys.mint_enrolment(session, settings, body.label)
-    return EnrolmentOut(
-        url=f"{origin}/admin/enrol/{enrolment.token}",
-        expires_at=enrolment.expires_at,
+    try:
+        made = await accounts.make_starter(
+            session, settings, username=body.username, reset=body.reset
+        )
+    except accounts.AdminError as exc:
+        conflict = "already set" in str(exc)
+        raise HTTPException(
+            status.HTTP_409_CONFLICT if conflict else status.HTTP_422_UNPROCESSABLE_CONTENT,
+            str(exc),
+        ) from None
+    kind = "starter_reset" if made.reset else "starter_made"
+    await audit.record(session, None, kind, ok=True)
+    await session.commit()
+    await audit.alert(
+        session,
+        settings,
+        mail_of(request),
+        "starter",
+        detail="Reset: the authenticator, recovery codes and sessions were wiped."
+        if made.reset
+        else "A temporary password was made for the first sign-in.",
+        now=utcnow(),
     )
+    log.info("admin.starter_user", reset=made.reset)
+    return StarterOut(
+        username=made.username,
+        temporary_password=made.password,
+        expires_at=made.expires_at,
+        sign_in_url=f"{settings.admin_origin}/admin/sign-in",
+    )
+
+
+@api.get("/client-address", dependencies=[AdminDep, On])
+async def seen_address(request: Request, settings: SettingsDep) -> dict[str, str | None]:
+    """The address limits and the audit log use for this request: send a made-up
+    ``X-Forwarded-For`` and check that your real address comes back (``NGOME_PROXY_HOPS``)."""
+    return {"address": client_address(request, settings.proxy_hops)}
 
 
 @api.get("/passkeys", dependencies=[AdminDep, On])
@@ -388,7 +279,10 @@ async def list_passkeys(session: SessionDep) -> list[PasskeyOut]:
     "/passkeys/{passkey_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[AdminDep, On]
 )
 async def remove_passkey(passkey_id: uuid.UUID, session: SessionDep) -> Response:
-    """Take a passkey off the allow-list; its sessions end with it."""
+    """Take a passkey off the list of second factors."""
     if not await passkeys.remove_passkey(session, passkey_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such passkey")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+web.include_router(pages)

@@ -1,6 +1,17 @@
 """Import every model so ``Base.metadata`` is complete for Alembic and tests."""
 
-from ngome.admin.models import AdminChallenge, AdminEnrolment, AdminPasskey, AdminSession
+from ngome.admin.models import (
+    AdminChallenge,
+    AdminDevice,
+    AdminEmailCode,
+    AdminEvent,
+    AdminPasskey,
+    AdminPending,
+    AdminRecoveryCode,
+    AdminSession,
+    AdminThrottle,
+    AdminUser,
+)
 from ngome.appstatus.models import AppNotice
 from ngome.auth.models import Account, AuthEvent, Device, OtpChallenge, RefreshToken
 from ngome.counting.models import CountFlood, CountKey, CountSeen, CountTotal, NoticeReach
@@ -13,9 +24,15 @@ from ngome.vault.models import Backup, BlobDeletion, StoredBlob
 __all__ = [
     "Account",
     "AdminChallenge",
-    "AdminEnrolment",
+    "AdminDevice",
+    "AdminEmailCode",
+    "AdminEvent",
     "AdminPasskey",
+    "AdminPending",
+    "AdminRecoveryCode",
     "AdminSession",
+    "AdminThrottle",
+    "AdminUser",
     "AppAttestChallenge",
     "AppAttestKey",
     "AppNotice",

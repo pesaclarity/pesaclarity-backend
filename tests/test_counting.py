@@ -273,6 +273,30 @@ async def test_country_comes_from_the_lookup(
     today = datetime.now(UTC).date()
     assert await totals(maker, MONTH, today.replace(day=1), "country") == {"KE": 1}
     assert lookup.addresses == ["127.0.0.1"]
+    # A made-up X-Forwarded-For entry is never used: only the one Google appends, last.
+    headers = {"Count-Token": token(), "X-Forwarded-For": "203.0.113.9, 198.51.100.4"}
+    await client.get("/v1/app-status", params=params, headers=headers)
+    assert lookup.addresses[-1] == "198.51.100.4"
+
+
+def test_client_address_trusts_only_the_appended_entry() -> None:
+    from starlette.requests import Request  # noqa: PLC0415
+
+    from ngome.core.client import client_address  # noqa: PLC0415
+
+    def request(*xff: str) -> Request:
+        headers = [(b"x-forwarded-for", v.encode()) for v in xff]
+        return Request({"type": "http", "headers": headers, "client": ("10.0.0.1", 5)})
+
+    assert client_address(request(), 1) == "10.0.0.1"
+    assert client_address(request("198.51.100.4"), 1) == "198.51.100.4"
+    assert client_address(request("203.0.113.9, 198.51.100.4"), 1) == "198.51.100.4"
+    assert client_address(request("203.0.113.9", "198.51.100.4"), 1) == "198.51.100.4"
+    assert client_address(request("203.0.113.9, 198.51.100.4, 35.191.0.1"), 2) == "198.51.100.4"
+    assert client_address(request("198.51.100.4"), 2) is None
+    assert client_address(request("not-an-address"), 1) is None
+    assert client_address(request("[2001:db8::1]:443"), 1) == "2001:db8::1"
+    assert client_address(request("198.51.100.4"), 0) == "10.0.0.1"
 
 
 async def test_the_token_is_never_logged(

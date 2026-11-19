@@ -1,5 +1,5 @@
-"""The admin dashboard: off until configured, passkey-only, its headers, and what its pages
-show, with small counts hidden (ADR 0024)."""
+"""The admin dashboard: off until configured, its headers, and what its pages show, with
+small counts hidden (ADR 0024). Sign-in itself is tested in test_admin_sign_in.py."""
 
 import secrets
 from collections.abc import AsyncIterator
@@ -11,37 +11,30 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from pydantic import SecretStr
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ngome.admin.downloads import summarise
-from ngome.admin.models import AdminEnrolment, AdminSession
-from ngome.admin.router import COOKIE
 from ngome.admin.views import installs_for
 from ngome.core.config import Settings
 from ngome.counting.models import DAY, MONTH, CountTotal
 from ngome.counting.suppress import Shown, derived, pair, shown_total, suppress, suppress_marked
 from ngome.crashes.models import CrashReportRow
-from tests.conftest import make_settings
-from tests.soft_passkey import SoftPasskey
-from tests.test_app_status import TEST_SEED
-
-ORIGIN = "https://admin.test"
-OTHER = "https://other.test"
-ADMIN_TOKEN = "test-admin-token-" + "z" * 32
-ADMIN = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
-SAME = {"Origin": ORIGIN}
+from tests.admin_flow import (  # noqa: F401 - totp_clock is a fixture
+    ADMIN,
+    ADMIN_TOKEN,
+    ORIGIN,
+    Owner,
+    admin_settings,
+    first_sign_in,
+    totp_clock,
+)
+from tests.conftest import FakeMail, make_settings
 
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return make_settings(
-        tmp_path,
-        admin_token=SecretStr(ADMIN_TOKEN),
-        admin_origin=ORIGIN,
-        app_status_signing_seed=SecretStr(TEST_SEED),
-        downloads_csv_url=None,
-    )
+    return admin_settings(tmp_path)
 
 
 @pytest.fixture
@@ -57,56 +50,9 @@ def maker(app: FastAPI) -> async_sessionmaker[AsyncSession]:
     return sessions
 
 
-async def enrol(
-    client: httpx.AsyncClient, passkey: SoftPasskey, label: str = "Phone", origin: str = ORIGIN
-) -> None:
-    # The default origin is left out of the request, as a terminal would.
-    request: dict[str, str] = {"label": label} | ({} if origin == ORIGIN else {"origin": origin})
-    minted = await client.post("/v1/admin/passkey-enrolments", json=request, headers=ADMIN)
-    assert minted.status_code == 201, minted.text
-    url = minted.json()["url"]
-    assert url.startswith(f"{origin}/admin/enrol/")
-    token = url.rsplit("/", 1)[1]
-    page = await client.get(f"/admin/enrol/{token}")
-    assert "Add a passkey" in page.text
-    here = {"Origin": origin}
-    start = await client.post("/admin/enrol/options", json={"token": token}, headers=here)
-    assert start.status_code == 200, start.text
-    body = start.json()
-    assert body["options"]["rp"]["id"] == passkey.rp_id
-    finish = await client.post(
-        "/admin/enrol/verify",
-        json={
-            "token": token,
-            "challenge_id": body["challenge_id"],
-            "credential": passkey.register(body["options"]),
-        },
-        headers=here,
-    )
-    assert finish.status_code == 200, finish.text
-    client.cookies.clear()
-
-
-async def sign_in(
-    client: httpx.AsyncClient, passkey: SoftPasskey, origin: str = ORIGIN
-) -> httpx.Response:
-    start = await client.post("/admin/sign-in/options", headers={"Origin": origin})
-    assert start.status_code == 200, start.text
-    body = start.json()
-    return await client.post(
-        "/admin/sign-in/verify",
-        json={"challenge_id": body["challenge_id"], "credential": passkey.sign_in(body["options"])},
-        headers={"Origin": origin},
-    )
-
-
 @pytest.fixture
-async def signed_in(client: httpx.AsyncClient) -> SoftPasskey:
-    passkey = SoftPasskey("admin.test", ORIGIN)
-    await enrol(client, passkey)
-    response = await sign_in(client, passkey)
-    assert response.status_code == 200, response.text
-    return passkey
+async def signed_in(client: httpx.AsyncClient, mail: FakeMail) -> Owner:
+    return await first_sign_in(client, mail)
 
 
 def test_suppression_hides_small_cells_and_their_complement() -> None:
@@ -130,20 +76,18 @@ async def test_off_until_the_origin_is_set(app: FastAPI, tmp_path: Path) -> None
     async with httpx.AsyncClient(transport=transport, base_url=ORIGIN) as client:
         assert (await client.get("/admin")).status_code == 404
         assert (await client.get("/admin/sign-in")).status_code == 404
-        minted = await client.post(
-            "/v1/admin/passkey-enrolments", json={"label": "x"}, headers=ADMIN
-        )
-        assert minted.status_code == 404
+        made = await client.post("/v1/admin/starter-user", json={"username": "x"}, headers=ADMIN)
+        assert made.status_code == 404
 
 
-async def test_pages_need_a_passkey_sign_in(client: httpx.AsyncClient) -> None:
+async def test_pages_need_a_sign_in(client: httpx.AsyncClient) -> None:
     for path in ("/admin", "/admin/installs", "/admin/crashes"):
         response = await client.get(path)
         assert response.status_code == 303
         assert response.headers["location"] == "/admin/sign-in"
     page = await client.get("/admin/sign-in")
     assert page.status_code == 200
-    assert "Sign in with a passkey" in page.text
+    assert "Not set up yet" in page.text
     assert page.headers["content-security-policy"].startswith("default-src 'self'")
     assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
     assert page.headers["cache-control"] == "no-store"
@@ -159,186 +103,6 @@ async def test_static_files_are_ours(client: httpx.AsyncClient) -> None:
         response = await client.get(f"/admin/static/{path}")
         assert response.status_code == 200, path
         assert response.headers["cache-control"] == "no-store"
-
-
-async def test_enrolment_needs_the_admin_token(client: httpx.AsyncClient) -> None:
-    response = await client.post("/v1/admin/passkey-enrolments", json={"label": "x"})
-    assert response.status_code == 401
-    wrong = {"Authorization": "Bearer " + "w" * 48}
-    response = await client.post("/v1/admin/passkey-enrolments", json={"label": "x"}, headers=wrong)
-    assert response.status_code == 401
-
-
-async def test_enrol_sign_in_and_sign_out(
-    client: httpx.AsyncClient, maker: async_sessionmaker[AsyncSession]
-) -> None:
-    passkey = SoftPasskey("admin.test", ORIGIN)
-    await enrol(client, passkey)
-    assert (await client.get("/admin")).status_code == 303
-
-    response = await sign_in(client, passkey)
-    assert response.status_code == 200
-    cookie = response.headers["set-cookie"]
-    assert cookie.startswith(f"{COOKIE}=")
-    for flag in ("HttpOnly", "Secure", "SameSite=strict", "Path=/", "Max-Age=43200"):
-        assert flag.lower() in cookie.lower()
-    assert "domain" not in cookie.lower()
-    async with maker() as session:
-        stored = list(await session.scalars(select(AdminSession)))
-    # Enrolling signed in once, and so did this. Only digests of the session ids are stored.
-    assert len(stored) == 2
-    assert client.cookies[COOKIE] not in {row.id_hash for row in stored}
-
-    overview = await client.get("/admin")
-    assert overview.status_code == 200
-    assert "Monthly active installs" in overview.text
-
-    # Sign-out needs the dashboard's own origin.
-    assert (await client.post("/admin/sign-out")).status_code == 403
-    out = await client.post("/admin/sign-out", headers=SAME)
-    assert out.status_code == 303
-    async with maker() as session:
-        assert len(list(await session.scalars(select(AdminSession)))) == 1
-    assert (await client.get("/admin")).status_code == 303
-
-
-async def test_enrolment_links_are_single_use_and_expire(
-    client: httpx.AsyncClient, maker: async_sessionmaker[AsyncSession]
-) -> None:
-    minted = await client.post("/v1/admin/passkey-enrolments", json={"label": "Key"}, headers=ADMIN)
-    token = minted.json()["url"].rsplit("/", 1)[1]
-    first = await client.post("/admin/enrol/options", json={"token": token}, headers=SAME)
-    body = first.json()
-    passkey = SoftPasskey("admin.test", ORIGIN)
-    finish = {
-        "token": token,
-        "challenge_id": body["challenge_id"],
-        "credential": passkey.register(body["options"]),
-    }
-    assert (await client.post("/admin/enrol/verify", json=finish, headers=SAME)).status_code == 200
-    again = await client.post("/admin/enrol/options", json={"token": token}, headers=SAME)
-    assert again.status_code == 400
-    assert "has been used or has expired" in (await client.get(f"/admin/enrol/{token}")).text
-
-    minted = await client.post("/v1/admin/passkey-enrolments", json={"label": "Old"}, headers=ADMIN)
-    old = minted.json()["url"].rsplit("/", 1)[1]
-    async with maker() as session:
-        await session.execute(
-            update(AdminEnrolment).values(expires_at=datetime.now(UTC) - timedelta(seconds=1))
-        )
-        await session.commit()
-    expired = await client.post("/admin/enrol/options", json={"token": old}, headers=SAME)
-    assert expired.status_code == 400
-
-
-@pytest.mark.parametrize("mistake", ["origin", "rp", "challenge", "unknown", "replay"])
-async def test_sign_in_refuses(client: httpx.AsyncClient, mistake: str) -> None:
-    passkey = SoftPasskey("admin.test", ORIGIN)
-    await enrol(client, passkey)
-    start = (await client.post("/admin/sign-in/options", headers=SAME)).json()
-    options: dict[str, Any] = start["options"]
-    challenge_id = start["challenge_id"]
-    signer = passkey
-    if mistake == "origin":
-        credential = passkey.sign_in(options, origin="https://evil.example")
-    elif mistake == "rp":
-        signer = SoftPasskey("evil.example", ORIGIN)
-        signer.credential_id = passkey.credential_id
-        credential = signer.sign_in(options)
-    elif mistake == "challenge":
-        credential = passkey.sign_in({"challenge": "AAAA"})
-    elif mistake == "unknown":
-        credential = SoftPasskey("admin.test", ORIGIN).sign_in(options)
-    else:
-        credential = passkey.sign_in(options)
-        body = {"challenge_id": challenge_id, "credential": credential}
-        assert (
-            await client.post("/admin/sign-in/verify", json=body, headers=SAME)
-        ).status_code == 200
-        client.cookies.clear()
-    body = {"challenge_id": challenge_id, "credential": credential}
-    response = await client.post("/admin/sign-in/verify", json=body, headers=SAME)
-    assert response.status_code == 400
-    assert "set-cookie" not in response.headers
-
-
-async def test_ceremonies_check_the_origin(client: httpx.AsyncClient) -> None:
-    assert (await client.post("/admin/sign-in/options")).status_code == 403
-    evil = {"Origin": "https://evil.example"}
-    assert (await client.post("/admin/sign-in/options", headers=evil)).status_code == 403
-
-
-async def test_a_second_origin_has_its_own_passkeys(
-    app: FastAPI, settings: Settings, client: httpx.AsyncClient
-) -> None:
-    app.state.settings = settings.model_copy(update={"admin_extra_origins": [OTHER]})
-    first = SoftPasskey("admin.test", ORIGIN)
-    await enrol(client, first)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url=OTHER) as other:
-        second = SoftPasskey("other.test", OTHER)
-        await enrol(other, second, label="Mac", origin=OTHER)
-        response = await sign_in(other, second, origin=OTHER)
-        assert response.status_code == 200, response.text
-        assert COOKIE in response.cookies
-        other.cookies.clear()
-        # A passkey works only on the host it was added on, whichever origin the page claims.
-        assert (await sign_in(other, first, origin=OTHER)).status_code == 400
-        start = (await other.post("/admin/sign-in/options", headers={"Origin": OTHER})).json()
-        body = {
-            "challenge_id": start["challenge_id"],
-            "credential": first.sign_in(start["options"], origin=OTHER),
-        }
-        refused = await other.post("/admin/sign-in/verify", json=body, headers={"Origin": OTHER})
-        assert refused.status_code == 400
-    assert (await sign_in(client, second)).status_code == 400
-    assert (await sign_in(client, first)).status_code == 200
-    listed = await client.get("/v1/admin/passkeys", headers=ADMIN)
-    assert [p["label"] for p in listed.json()] == ["Phone", "Mac"]
-
-
-async def test_enrolment_links_open_only_on_the_dashboards_origins(
-    app: FastAPI, settings: Settings, client: httpx.AsyncClient
-) -> None:
-    for origin in (OTHER, "https://evil.example"):
-        minted = await client.post(
-            "/v1/admin/passkey-enrolments", json={"label": "x", "origin": origin}, headers=ADMIN
-        )
-        assert minted.status_code == 422
-    from_other = {"Origin": OTHER}
-    assert (await client.post("/admin/sign-in/options", headers=from_other)).status_code == 403
-    app.state.settings = settings.model_copy(update={"admin_extra_origins": [OTHER]})
-    assert (await client.post("/admin/sign-in/options", headers=from_other)).status_code == 200
-
-
-def test_extra_origins_need_the_main_one(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="admin_extra_origins needs admin_origin"):
-        make_settings(tmp_path, admin_extra_origins=[OTHER])
-    with pytest.raises(ValueError, match="admin_extra_origins"):
-        make_settings(tmp_path, admin_origin=ORIGIN, admin_extra_origins=["other.test"])
-
-
-async def test_removing_a_passkey_ends_its_sessions(
-    client: httpx.AsyncClient, signed_in: SoftPasskey
-) -> None:
-    assert (await client.get("/admin")).status_code == 200
-    listed = await client.get("/v1/admin/passkeys", headers=ADMIN)
-    assert [p["label"] for p in listed.json()] == ["Phone"]
-    removed = await client.delete(f"/v1/admin/passkeys/{listed.json()[0]['id']}", headers=ADMIN)
-    assert removed.status_code == 204
-    assert (await client.get("/admin")).status_code == 303
-    assert (await sign_in(client, signed_in)).status_code == 400
-
-
-async def test_expired_sessions_end(
-    client: httpx.AsyncClient, signed_in: SoftPasskey, maker: async_sessionmaker[AsyncSession]
-) -> None:
-    async with maker() as session:
-        await session.execute(
-            update(AdminSession).values(expires_at=datetime.now(UTC) - timedelta(seconds=1))
-        )
-        await session.commit()
-    assert (await client.get("/admin")).status_code == 303
 
 
 async def add_totals(
@@ -358,7 +122,7 @@ async def add_totals(
 
 async def test_overview_and_installs_hide_small_counts(
     client: httpx.AsyncClient,
-    signed_in: SoftPasskey,
+    signed_in: Owner,
     maker: async_sessionmaker[AsyncSession],
     app: FastAPI,
 ) -> None:
@@ -417,7 +181,7 @@ async def test_overview_and_installs_hide_small_counts(
 async def test_installs_by_country_when_lookup_is_on(
     app: FastAPI,
     client: httpx.AsyncClient,
-    signed_in: SoftPasskey,
+    signed_in: Owner,
     maker: async_sessionmaker[AsyncSession],
     settings: Settings,
 ) -> None:
@@ -440,7 +204,7 @@ async def test_installs_by_country_when_lookup_is_on(
     assert "2 more under 10" in page
 
 
-async def test_crash_pages(app: FastAPI, client: httpx.AsyncClient, signed_in: SoftPasskey) -> None:
+async def test_crash_pages(app: FastAPI, client: httpx.AsyncClient, signed_in: Owner) -> None:
     from tests.test_crash_reports import report  # noqa: PLC0415
 
     for build in ("play", "play", "foss"):
@@ -544,7 +308,7 @@ def test_installs_for_some_builds_follow_the_builds_suppression() -> None:
 
 async def test_pages_mark_hidden_cells_and_derived_sums(
     client: httpx.AsyncClient,
-    signed_in: SoftPasskey,
+    signed_in: Owner,
     maker: async_sessionmaker[AsyncSession],
 ) -> None:
     month = datetime.now(UTC).date().replace(day=1)
@@ -593,7 +357,7 @@ async def test_pages_mark_hidden_cells_and_derived_sums(
 
 
 async def test_filters_are_checked_and_said_when_dropped(
-    client: httpx.AsyncClient, signed_in: SoftPasskey
+    client: httpx.AsyncClient, signed_in: Owner
 ) -> None:
     page = await client.get("/admin/crashes", params={"days": "45", "build": "nokia"})
     assert page.status_code == 200
@@ -607,7 +371,7 @@ async def test_filters_are_checked_and_said_when_dropped(
 async def test_crash_rate_uses_one_month_on_both_sides(
     app: FastAPI,
     client: httpx.AsyncClient,
-    signed_in: SoftPasskey,
+    signed_in: Owner,
     maker: async_sessionmaker[AsyncSession],
 ) -> None:
     from tests.test_crash_reports import report  # noqa: PLC0415
@@ -641,7 +405,7 @@ async def test_crash_rate_uses_one_month_on_both_sides(
 
 
 async def test_notices_and_learning_pages(
-    app: FastAPI, client: httpx.AsyncClient, signed_in: SoftPasskey
+    app: FastAPI, client: httpx.AsyncClient, signed_in: Owner
 ) -> None:
     notices = await client.get("/admin/notices")
     assert notices.status_code == 200
@@ -652,3 +416,11 @@ async def test_notices_and_learning_pages(
     for path in ("/admin/notices", "/admin/learning", "/admin/installs.csv"):
         client.cookies.clear()
         assert (await client.get(path)).status_code == 303
+
+
+def test_extra_origins_need_the_main_one(tmp_path: Path) -> None:
+    other = "https://other.test"
+    with pytest.raises(ValueError, match="admin_extra_origins needs admin_origin"):
+        make_settings(tmp_path, admin_extra_origins=[other])
+    with pytest.raises(ValueError, match="admin_extra_origins"):
+        make_settings(tmp_path, admin_origin=ORIGIN, admin_extra_origins=["other.test"])

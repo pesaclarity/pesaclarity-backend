@@ -1,0 +1,14 @@
+{% extends "_auth.html" %}{% set title = "Set up your authenticator" %}{% set wide = True %}{% block card %}
+{% if first %}{{ first_steps(4) }}{% endif %}<h1>{{ "Set up your authenticator" if first else "Replace your authenticator" }}</h1>
+<p class="muted lead-text">{% if first %}Required. {% endif %}Any app that makes 6-digit codes works, such as Aegis, 2FAS, Ente Auth or your password manager.{% if not first %} The old one keeps working until a code from the new one verifies.{% endif %}</p>
+<div class="qrrow"><div class="qrbox" role="img" aria-label="QR code for the authenticator app">{{ qr }}</div>
+<ol class="howto"><li>In the app, add an account and scan this code.</li><li>It appears as <b>Pesa Clarity admin: {{ username }}</b>.</li><li>Type the code it shows below.</li></ol></div>
+<details class="cant"><summary>Can’t scan? Type this key</summary><span class="key" data-key>{{ key }}</span><span class="faint">Time-based, 6 digits, every 30 seconds, SHA-1.</span></details>
+{% if error %}{{ alert(error) }}{% endif %}
+<form method="post" action="{{ action }}">
+{{ code_field("Code from the app", hidden_label=False) }}
+<button class="btn" type="submit">Confirm and continue</button>
+</form>
+{{ note("lock", "This key is shown only while you set it up, and is stored encrypted on the server.") }}
+{% if not first %}<div class="linkrow"><a href="/admin/security">Cancel</a></div>{% endif %}
+{% endblock %}
