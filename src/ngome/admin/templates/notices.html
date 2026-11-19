@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% from "_ui.html" import how %}{% set page_title = "Notices" %}
+{% block main %}
+<div class="head"><div><h1>Notices</h1><div class="sub">What the update check has shown, and to how many check-ins. Notices are sent with the admin token; this page only reads them.</div></div></div>
+{% if notices %}<div class="grid">{% for n in notices %}<section class="card"><div class="card-h"><div><h2>{{ n.title }} <span class="tag{% if n.must_update %} red{% endif %}">{{ n.kind }}</span></h2><div class="sub">{{ n.status|capitalize }} · {{ n.builds }}</div></div></div>
+<div class="grid g21"><div><p class="muted m0">{{ n.body }}</p></div>
+<div><dl class="kv"><dt>Shown to</dt><dd>{% if n.reach == "<10" %}<span class="lt10">&lt;10</span>{% else %}{{ n.reach }}{% endif %}</dd><dt>Last 7 days</dt><dd>{% if n.reach_7 == "<10" %}<span class="lt10">&lt;10</span>{% else %}{{ n.reach_7 }}{% endif %}</dd>{% if n.first %}<dt>Between</dt><dd>{{ n.first }} and {{ n.last }}</dd>{% endif %}</dl>
+<div class="mt12">{{ n.chart }}<div class="m-note">Check-ins per day, 30 days; days under 10 are a low stub</div></div></div></div></section>{% endfor %}</div>
+{% else %}<section class="card"><div class="empty"><h3>No notices yet</h3><p>A notice made with <span class="mono">POST /v1/admin/app-notices</span> shows here with how many check-ins carried it.</p></div></section>{% endif %}
+{{ how(country_on) }}
+{% endblock %}

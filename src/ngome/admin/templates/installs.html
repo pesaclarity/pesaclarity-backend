@@ -1,24 +1,26 @@
-{% extends "base.html" %}{% from "_bars.html" import bar_rows, month_pick %}{% set page_title = "Installs" %}
+{% extends "base.html" %}{% from "_ui.html" import kpi, bar_rows, menu, seg, notes, how, cell %}{% set page_title = "Installs" %}{% set f = data.filters %}
 {% block main %}
-<div class="head"><div><h1>Installs by country</h1><div class="sub">Monthly active installs, {{ month_name(data.month) }}. One dimension at a time: no country by version.</div></div>
-<div class="filters">{{ month_pick(data.months, data.month, "/admin/installs") }}</div></div>
-<div class="grid two">
- <div class="card"><h2>Countries</h2>
- {% if data.country_on %}<p class="sub">From the address of each first check-in this month, looked up on the server and then dropped.</p>
- {% if data.countries %}<table><thead><tr><th>Country</th><th></th><th class="n">Installs</th><th class="n hide-s">Share</th></tr></thead><tbody>{{ bar_rows(data.countries) }}</tbody></table>
- {% else %}<p class="sub">No installs counted by country this month yet.</p>{% endif %}
- <p class="note">Cells under 10 are hidden as &lt;10, and so are cells that would let a hidden one be worked out from the total.
- "Unknown" is addresses the database does not place.</p>
- {% else %}<p class="sub">Country lookup is off (<span class="mono">NGOME_COUNTRY_LOOKUP_ENABLED</span>) until the DB-IP Lite licence is confirmed. Installs are still counted by version and build, without a country.</p>{% endif %}</div>
- <div class="grid start">
-  {% if data.country_on %}<div class="card"><div class="label">Countries with 10 or more</div><div class="num">{{ data.shown }}</div><div class="delta">{{ data.hidden }} more under 10</div></div>{% endif %}
-  <div class="card"><h2>What is stored</h2><dl class="kv mt10">
-  <dt>Per month</dt><dd>Counts by country, version and build, kept for good</dd>
-  <dt>Per day</dt><dd>Counts by version and build (no country), kept 13 months</dd>
-  <dt>This month's set</dt><dd>Keyed digests of tokens, nothing else; deleted on the 2nd of next month</dd>
-  <dt>Addresses</dt><dd>Never stored or logged</dd></dl></div>
-  <div class="card"><h2>Flood check</h2><p class="sub m0">{% if data.flood_hours %}The ceiling ({{ "{:,}".format(data.ceiling) }} new tokens per hour) was reached in {{ data.flood_hours }} hour{% if data.flood_hours != 1 %}s{% endif %}; {{ "{:,}".format(data.flood_dropped) }} check-ins were not counted. Last alert: {{ data.last_flood }}.{% else %}New tokens per hour stayed under the ceiling ({{ "{:,}".format(data.ceiling) }}). Last alert: none.{% endif %}</p></div>
- </div>
+<div class="head"><div><h1>Installs</h1><div class="sub">Monthly active installs, {{ month_name(data.month) }}{% if data.tiles[0].value != "<10" %}: {{ data.tiles[0].value }}{% endif %}. One dimension at a time.</div></div></div>
+<div class="filters">{{ menu("Month", month_name(data.month), options("/admin/installs", f, "month", month_items(data.months))) }}{{ seg("Breakdown", options("/admin/installs", f, "dim", [("country", "Country"), ("version", "Version"), ("build", "Build")])) }}<span class="pick off" aria-disabled="true"><b>Build</b> Not with {{ data.dim }}</span><span class="compare">{% if data.dim == "country" %}Country is by month only, and never split by version or build{% else %}Installs are counted one dimension at a time{% endif %}</span></div>
+{{ notes(f) }}
+<div class="grid kpis">{% for t in data.tiles %}{{ kpi(t) }}{% endfor %}</div>
+<div class="grid g21 mt">
+ <section class="card" aria-labelledby="dim-h"><div class="card-h"><div><h2 id="dim-h">By {{ data.dim }}</h2><div class="sub">{% if data.dim == "country" %}From the address of each phone’s first check-in this month, looked up on the server and then dropped.{% elif data.dim == "version" %}The version each phone had when first counted this month.{% else %}Where each counted phone got the app.{% endif %}</div></div>{% if data.rows %}<a class="act" href="/admin/installs.csv?{{ f.query() }}">Download CSV</a>{% endif %}</div>
+ {% if data.dim == "country" and not data.country_on %}<p class="sub">Country lookup is off (<span class="mono">NGOME_COUNTRY_LOOKUP_ENABLED</span>) until the DB-IP Lite licence is confirmed. Installs are still counted by version and build, without a country.</p>
+ {% elif data.rows %}<table><caption class="sr">Monthly active installs by {{ data.dim }}</caption><thead><tr><th>{{ data.dim|capitalize }}</th><th><span class="sr">Bar</span></th><th class="n">Installs</th><th class="n hide-s">Share</th></tr></thead><tbody>{{ bar_rows(data.rows) }}</tbody></table>
+ <p class="foot-note">{{ data.hidden_count }} cell{% if data.hidden_count != 1 %}s{% endif %} hidden.{% if data.dim == "country" %} "Unknown" is addresses the database does not place. IP Geolocation by <a href="{{ attribution_url }}">DB-IP</a>, CC BY 4.0.{% endif %}</p>
+ {% else %}<div class="empty"><h3>Nothing counted this month yet</h3><p>Rows show here as phones check in; any under 10 show as &lt;10.</p></div>{% endif %}</section>
+ <div class="side-col">
+ <section class="card" aria-labelledby="flood-h"><div class="card-h"><div><h2 id="flood-h">Flood check</h2><div class="sub">New tokens per hour, ceiling {{ "{:,}".format(data.ceiling) }}.</div></div>{% if data.flood_hours %}<span class="tag red">{{ data.flood_hours }} hour{% if data.flood_hours != 1 %}s{% endif %}</span>{% else %}<span class="tag">none</span>{% endif %}</div>
+ {% if data.flood_hours %}<dl class="kv"><dt>Reached</dt><dd>{{ data.last_flood }}{% if data.flood_hours > 1 %} (the latest){% endif %}</dd><dt>Not counted</dt><dd>{{ "{:,}".format(data.flood_dropped) }} check-ins</dd><dt>Effect</dt><dd>That day’s count may be low by up to {{ "{:,}".format(data.flood_dropped) }}</dd></dl>{% else %}<p class="sub m0">New tokens per hour stayed under the ceiling this month.</p>{% endif %}</section>
+ <section class="card" aria-labelledby="stored-h"><div class="card-h"><div><h2 id="stored-h">What is stored</h2></div></div><dl class="kv">
+ <dt>Per month</dt><dd>Counts by country, version and build, kept for good</dd>
+ <dt>Per day</dt><dd>Counts by version and build, no country, 13 months</dd>
+ <dt>This month’s set</dt><dd>Keyed digests only; deleted on the 2nd of next month</dd>
+ <dt>Addresses</dt><dd>Never stored or logged</dd></dl></section></div>
 </div>
-{% if data.country_on %}<p class="note"><a href="{{ attribution_url }}">{{ attribution }}</a> (db-ip.com), CC BY 4.0.</p>{% endif %}
+<section class="card mt" aria-labelledby="adopt-h"><div class="card-h"><div><h2 id="adopt-h">Version adoption</h2><div class="sub">Monthly active installs by version, six months. Each column is its own month’s suppression. On a phone, the last three months.</div></div>{% if data.adoption %}<a class="act" href="/admin/adoption.csv?{{ f.query() }}">Download CSV</a>{% endif %}</div>
+{% if data.adoption %}<table><caption class="sr">Monthly active installs by version and month</caption><thead><tr><th>Version</th>{% for m in data.adoption_months %}<th class="n{% if loop.index0 < 3 %} hide-s{% endif %}">{{ m.strftime("%b") }}</th>{% endfor %}</tr></thead><tbody>{% for r in data.adoption %}<tr><td>{{ r.version }}</td>{% for c in r.cells %}<td class="n{% if loop.index0 < 3 %} hide-s{% endif %}{% if c is none %} faint{% endif %}">{% if c is none %}<span aria-label="not seen">·</span>{% else %}{{ cell(c[0]) }}{% if c[1] %}<div class="share-sub">{{ c[1] }}</div>{% endif %}{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody></table>
+{% else %}<p class="sub">No versions counted in these six months.</p>{% endif %}</section>
+{{ how(data.country_on) }}
 {% endblock %}

@@ -1,33 +1,40 @@
-{% extends "base.html" %}{% from "_bars.html" import bar_rows, month_pick %}{% set page_title = "Overview" %}
+{% extends "base.html" %}{% from "_ui.html" import kpi, bar_rows, menu, seg, notes, how, cell, icon %}{% from "_downloads.html" import downloads_card %}{% set page_title = "Overview" %}{% set f = data.filters %}
 {% block main %}
-<div class="head"><div><h1>Overview</h1><div class="sub">{{ month_name(data.month) }}, up to {{ data.as_of }} (UTC).</div></div>
-{{ month_pick(data.months, data.month, "/admin") }}</div>
-<div class="grid tiles">
-{% for tile in data.tiles %} <div class="card{% if loop.first %} lead{% endif %}"><div class="label">{{ tile.label }}</div><div class="num">{{ tile.value }}</div><div class="delta">{{ tile.delta }}</div></div>
-{% endfor %}</div>
-<div class="grid two mt16">
- <div class="card"><h2>Daily active installs</h2><p class="sub">Distinct monthly tokens seen each day. Phones that switched counting off are not in it. Days under 10 are left out.</p>
- {{ data.daily_chart }}</div>
- <div class="card"><h2>Versions this month</h2><p class="sub">The version each phone had when first counted this month.</p>
- <table><tbody>{{ bar_rows(data.versions) }}</tbody></table></div>
+<div class="head"><div><h1>Overview</h1><div class="sub">{% if data.started %}Installs, crashes and downloads for {{ month_name(data.month) }}.{% else %}{{ month_name(data.month) }}. Nothing has been counted yet.{% endif %}</div></div></div>
+<div class="filters">{{ menu("Month", month_name(data.month), options("/admin", f, "month", month_items(data.months))) }}{{ menu("Build", build_names[f.build] if f.build else "All builds", options("/admin", f, "build", build_items, platform=None)) }}{{ menu("Platform", platform_names[f.platform] if f.platform else "Android and iPhone", options("/admin", f, "platform", platform_items, build=None)) }}<span class="compare">Up to {{ data.as_of }} (UTC) · compared with {{ data.months[1].strftime("%B") if data.months|length > 1 else "the month before" }}</span></div>
+{{ notes(f) }}
+<div class="grid kpis">{% for t in data.tiles %}{{ kpi(t) }}{% endfor %}</div>
+<div class="grid g21 mt">
+ <section class="card" aria-labelledby="trend-h"><div class="card-h"><div><h2 id="trend-h">Monthly active installs</h2><div class="sub">{% if data.trend %}Each phone counted once a month, under the version it had when first seen.{% else %}Six months, newest release and earlier ones.{% endif %}</div></div>{% if data.trend and not f.builds() %}{{ seg("Split by", options("/admin", f, "split", [("release", "Release"), ("build", "Build")])) }}{% endif %}</div>
+ {% if data.trend %}{% if data.trend_legend %}<div class="legend mb6"><span><i class="sw s1"></i>{{ data.trend_legend[0] }}</span><span><i class="sw s2"></i>{{ data.trend_legend[1] }}</span></div>{% endif %}
+ {{ data.trend }}
+ {% if data.trend_note %}<p class="foot-note m0">{{ data.trend_note }}</p>{% endif %}
+ <details class="table"><summary>See as a table</summary> · <a href="/admin/monthly.csv?{{ f.query() }}">Download CSV</a>
+ <table class="wrap"><thead><tr><th>Month</th><th class="n">Installs</th>{% if data.trend_legend %}<th class="n">{{ data.trend_legend[0].split(" (")[0].replace(" that month", "") }}</th><th class="n">{{ data.trend_legend[1] }}</th>{% endif %}</tr></thead><tbody>{% for r in data.trend_rows %}<tr><td>{{ r.month }}</td><td class="n">{{ cell(r.total) }}</td>{% if data.trend_legend %}<td class="n">{{ cell(r.first) }}</td><td class="n">{{ cell(r.second) }}</td>{% endif %}</tr>{% endfor %}</tbody></table></details>
+ {% else %}<div class="ph">The trend starts with the first month that has 10 or more installs.<br>Months under 10 show as &lt;10.</div>{% endif %}</section>
+ <section class="card" aria-labelledby="builds-h"><div class="card-h"><div><h2 id="builds-h">By build</h2><div class="sub">{{ data.month.strftime("%B") }}, with six months behind it.</div></div></div>
+ {% if data.started %}<div class="multi">{% for m in data.multiples %}<div><div class="m-top"><span class="m-name">{{ m.name }}</span><span class="m-val">{{ cell(m.shown) }}</span></div>{{ m.chart }}<div class="m-note">{{ m.note }}</div></div>{% endfor %}</div>
+ {% if data.builds_note %}<p class="foot-note mt12">{{ data.builds_note }}</p>{% endif %}
+ {% else %}<div class="ph">Play, F-Droid, Website APK and iPhone appear here once each has 10 or more.</div>{% endif %}</section>
 </div>
-<div class="grid half mt16">
- <div class="card"><h2>Builds this month</h2><p class="sub">Where each counted phone got the app.</p>
- <table><tbody>{{ bar_rows(data.builds) }}</tbody></table></div>
- <div class="card" id="notices"><h2>Notice reach</h2><p class="sub">Check-ins whose answer carried the notice. Counts only, never who.</p>
- {% if data.notices %}<table><thead><tr><th>Notice</th><th class="n">Shown to</th><th class="n hide-s">Since</th></tr></thead><tbody>
- {% for notice in data.notices %}<tr><td>{{ notice.title }} <span class="tag{% if notice.must_update %} new{% endif %}">{{ notice.tag }}</span></td><td class="n">{{ notice.reach }}</td><td class="n hide-s">{{ notice.since }}</td></tr>
- {% endfor %}</tbody></table>{% else %}<p class="sub">No notice has been shown yet.</p>{% endif %}</div>
+{% if data.started %}<div class="grid g21 mt">
+ <section class="card" aria-labelledby="daily-h"><div class="card-h"><div><h2 id="daily-h">Daily active installs</h2><div class="sub">Last {{ data.daily_days }} days{% if f.build %}, {{ build_names[f.build] }}{% elif f.platform %}, {{ platform_names[f.platform] }}{% endif %}. Days under 10 are left out.</div></div>{{ seg("Days", options("/admin", f, "days", [(30, "30 d"), (90, "90 d")])) }}</div>
+ {% if data.daily %}<div class="legend mb6"><span><i class="sw s1"></i>Daily</span><span><i class="sw gap"></i>7-day average</span>{% if data.daily_hidden %}<span><i class="sw band"></i>Under 10, hidden ({{ data.daily_hidden|join(", ") if data.daily_hidden|length < 4 else data.daily_hidden|length ~ " days" }})</span>{% endif %}</div>
+ {{ data.daily }}{% else %}<div class="ph">Daily figures show from the first day with 10 or more.</div>{% endif %}</section>
+ <section class="card" aria-labelledby="versions-h"><div class="card-h"><div><h2 id="versions-h">Versions</h2><div class="sub">{{ data.month.strftime("%B") }}. {{ data.versions_note or "The version each phone had when first counted this month." }}</div></div></div>
+ {% if data.versions %}<table><caption class="sr">Monthly active installs by version</caption><tbody>{{ bar_rows(data.versions) }}</tbody></table>{% else %}<p class="sub">No versions counted this month yet.</p>{% endif %}</section>
+</div>{% endif %}
+<div class="grid g11 mt">
+ <section class="card" aria-labelledby="crash-h"><div class="card-h"><div><h2 id="crash-h">Top crash groups</h2><div class="sub">{{ data.crash_summary }}</div></div><a class="act" href="/admin/crashes?{{ f.carried() }}">All crashes ›</a></div>
+ {% if data.crash_rows %}<table><thead><tr><th>Error and where</th><th class="hide-s">30 days</th><th class="n">Reports</th></tr></thead><tbody>{% for g in data.crash_rows %}<tr><td><a class="row" href="/admin/crashes/{{ g.id }}{% if f.carried() %}?{{ f.carried() }}{% endif %}"><span class="err-name">{{ g.error }}</span>{% if g.is_new %} <span class="tag red">new</span>{% endif %}<div class="mono where">{{ g.where }}</div></a></td><td class="hide-s">{{ g.trend }}</td><td class="n">{{ g.reports }}</td></tr>{% endfor %}</tbody></table>
+ {% else %}<div class="empty">{{ icon("tick") }}<h3>No crash reports this week</h3><p>Reports come only from people who said yes on the crash sheet, so a quiet week is good news, not proof.</p></div>{% endif %}</section>
+ {% if data.started %}<section class="card" aria-labelledby="notice-h"><div class="card-h"><div><h2 id="notice-h">Notice reach</h2><div class="sub">Check-ins whose answer carried the notice. Counts only, never who.</div></div><a class="act" href="/admin/notices">Notices ›</a></div>
+ {% if data.notices %}<table><thead><tr><th>Notice</th><th class="n">Shown to</th><th class="n hide-s">Since</th></tr></thead><tbody>{% for n in data.notices %}<tr><td>{{ n.title }} <span class="tag{% if n.must_update %} red{% endif %}">{{ n.tag }}</span></td><td class="n">{% if n.reach == "<10" %}<span class="lt10">&lt;10</span>{% else %}{{ n.reach }}{% endif %}</td><td class="n muted hide-s">{{ n.since }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="sub">No notice has been shown yet.</p>{% endif %}</section>{% else %}{{ downloads_card(data) }}{% endif %}
 </div>
-<div class="grid half mt16">
- <div class="card"><h2>Downloads by file, 30 days</h2><p class="sub">From the daily snapshot on the <span class="mono">stats</span> branch of pesaclarity/.github.</p>
- {% if data.downloads %}<table><thead><tr><th>File</th><th class="n">Downloads</th></tr></thead><tbody>
- {% for name, n in data.downloads.by_file %}<tr><td class="mono">{{ name }}</td><td class="n">{{ "{:,}".format(n) }}</td></tr>
- {% endfor %}</tbody></table>{% else %}<p class="sub">The snapshot could not be read just now.</p>{% endif %}</div>
- <div class="card" id="learning"><h2>Federated learning</h2><p class="sub">From the aggregator, when it runs.</p>
- <dl class="kv"><dt>Status</dt><dd>Not running yet: no rounds have been recorded</dd>
- <dt>Smallest cohort</dt><dd>{{ data.fl_min_cohort }} phones (setting)</dd><dt>Privacy budget</dt><dd>Published with each model release</dd></dl>
- <p class="note mt14">This card fills in once the aggregator stores its rounds, cohort sizes and privacy spend (0024, stage 5).</p></div>
-</div>
-<p class="note">Counts under 10 show as &lt;10.{% if data.country_on %} Country data: <a href="{{ attribution_url }}">{{ attribution }}</a> (CC BY 4.0). The address is used for the lookup and then dropped.{% endif %}</p>
+{% if data.started %}<div class="grid g11 mt">{{ downloads_card(data) }}
+ <section class="card" aria-labelledby="fl-h"><div class="card-h"><div><h2 id="fl-h">Federated learning</h2><div class="sub">From the aggregator, when it runs.</div></div><span class="tag">not running yet</span></div>
+ <dl class="kv"><dt>Rounds</dt><dd>None recorded yet</dd><dt>Smallest cohort</dt><dd>{{ data.fl_min_cohort }} phones (setting)</dd><dt>Privacy budget</dt><dd>Published with each model release</dd></dl>
+ <p class="foot-note">Fills in once the aggregator stores rounds, cohort sizes and privacy spend (ADR 0024, stage 5). <a href="/admin/learning">More ›</a></p></section>
+</div>{% endif %}
+{{ how(data.country_on) }}
 {% endblock %}
