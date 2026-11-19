@@ -209,6 +209,11 @@ form.inline { display: inline; }
   .head { margin-bottom: 12px; }
   .filters { gap: 6px; }
   .seg a, .pick, details.menu-pick > summary { min-height: 40px; display: inline-flex; align-items: center; }
+  /* A menu opens across the whole filter row, so one whose button wrapped to the right
+     (Build, at 390) cannot run past the edge of the screen. */
+  .filters { position: relative; }
+  details.menu-pick { position: static; }
+  details.menu-pick .menu { left: 0; right: 0; min-width: 0; }
   .filters .compare { margin-left: 0; width: 100%; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .kpi.lead { grid-column: 1 / -1; }

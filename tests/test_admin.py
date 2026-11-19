@@ -76,6 +76,7 @@ async def test_off_until_the_origin_is_set(app: FastAPI, tmp_path: Path) -> None
     async with httpx.AsyncClient(transport=transport, base_url=ORIGIN) as client:
         assert (await client.get("/admin")).status_code == 404
         assert (await client.get("/admin/sign-in")).status_code == 404
+        assert (await client.get("/favicon.ico")).status_code == 404
         made = await client.post("/v1/admin/starter-user", json={"username": "x"}, headers=ADMIN)
         assert made.status_code == 404
 
@@ -103,6 +104,32 @@ async def test_static_files_are_ours(client: httpx.AsyncClient) -> None:
         response = await client.get(f"/admin/static/{path}")
         assert response.status_code == 200, path
         assert response.headers["cache-control"] == "no-store"
+
+
+async def test_favicon_is_the_brand_mark_and_may_be_cached(client: httpx.AsyncClient) -> None:
+    svg = await client.get("/admin/static/favicon.svg")
+    assert svg.status_code == 200
+    assert svg.headers["content-type"].startswith("image/svg+xml")
+    assert 'fill="#C8102E"' in svg.text
+    ico = await client.get("/admin/static/favicon.ico")
+    assert ico.status_code == 200
+    assert ico.content[:4] == b"\x00\x00\x01\x00"  # an ICO file's header
+    # Browsers ask the site root whatever the page links to: the same file, no redirect.
+    root = await client.get("/favicon.ico")
+    assert root.status_code == 200
+    assert root.headers["content-type"] == "image/vnd.microsoft.icon"
+    assert root.content == ico.content
+    for response in (svg, ico, root):
+        assert response.headers["cache-control"] == "public, max-age=604800"
+    # Every page links both; nothing else under /admin is cached.
+    page = await client.get("/admin/sign-in")
+    assert '<link rel="icon" href="/admin/static/favicon.ico" sizes="32x32">' in page.text
+    assert '<link rel="icon" href="/admin/static/favicon.svg" type="image/svg+xml">' in page.text
+    assert page.headers["cache-control"] == "no-store"
+    # The API is untouched.
+    health = await client.get("/health")
+    assert health.status_code == 200
+    assert "cache-control" not in health.headers
 
 
 async def add_totals(

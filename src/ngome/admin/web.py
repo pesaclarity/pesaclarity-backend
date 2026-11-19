@@ -41,6 +41,13 @@ STAGE_PAGES = {
     Stage.RECOVERY_CODES.value: "/admin/first/recovery-codes",
 }
 
+STATIC = resources.files("ngome.admin") / "static"
+# The one exception to "never cached" (ADR 0024): the brand mark, which is the same for
+# everyone and holds nothing private. Browsers ask the site root for /favicon.ico whatever
+# the page links to, so that path is served too.
+ICON_PATHS = frozenset({"/favicon.ico", "/admin/static/favicon.ico", "/admin/static/favicon.svg"})
+ICON_CACHE = "public, max-age=604800"
+
 templates = Jinja2Templates(directory=str(resources.files("ngome.admin") / "templates"))
 templates.env.globals.update(
     number=views.number,
