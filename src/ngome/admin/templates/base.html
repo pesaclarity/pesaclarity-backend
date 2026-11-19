@@ -1,0 +1,4 @@
+{% set title = page_title %}{% include "_head.html" %}<body><header class="top"><div class="brand">{% include "_logo.html" %} Pesa Clarity <small>admin</small></div>
+<nav><a href="/admin"{% if nav == "overview" %} class="on"{% endif %}>Overview</a><a href="/admin/installs"{% if nav == "installs" %} class="on"{% endif %}>Installs</a><a href="/admin/crashes"{% if nav == "crashes" %} class="on"{% endif %}>Crashes</a><a href="/admin#notices">Notices</a><a href="/admin#learning">Learning</a></nav><div class="who">Signed in with a passkey · <form class="inline" method="post" action="/admin/sign-out" data-sign-out><button class="linkbtn" type="submit">Sign out</button></form></div></header><main>
+{% block main %}{% endblock %}
+</main></body></html>

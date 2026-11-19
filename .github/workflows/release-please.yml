@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       released: ${{ steps.release.outputs.release_created }}
@@ -34,7 +34,7 @@ jobs:
     name: Bring the release into dev
     needs: release-please
     if: needs.release-please.outputs.released == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write

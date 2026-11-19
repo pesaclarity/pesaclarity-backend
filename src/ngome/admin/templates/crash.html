@@ -1,0 +1,21 @@
+{% extends "base.html" %}{% set page_title = data.group.error %}
+{% block main %}
+<div class="crumb"><a href="/admin/crashes">Crashes</a> / {{ data.group.error }}</div>
+<div class="head"><div><h1>{{ data.title }}</h1><div class="sub">{% if data.group.decoded_location %}{{ data.group.decoded_location }} · {% endif %}first seen {{ data.chart_first }} · last seen {{ data.group.last_seen.day }} {{ data.group.last_seen.strftime("%b") }}</div></div>
+</div>
+<div class="grid tiles">
+ <div class="card lead"><div class="label">Reports</div><div class="num">{{ data.group.reports }}</div><div class="delta">{{ data.lead_delta }}</div></div>
+ <div class="card"><div class="label">Builds</div><div class="num facts-num">{% for line in data.builds %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div></div>
+ <div class="card"><div class="label">{{ data.system_label }}</div><div class="num facts-num">{% for line in data.systems %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div></div>
+ <div class="card"><div class="label">CPU</div><div class="num facts-num">{% for line in data.cpus %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div></div>
+</div>
+<div class="card mt16"><h2>Stack</h2><p class="sub">{{ data.stack_note }}</p><pre>{% for frame in data.stack %}{{ frame }}
+{% endfor %}</pre></div>
+<div class="grid half mt16">
+ <div class="card"><h2>Reports per day</h2><p class="sub">Since first seen{% if data.group.first_seen != data.group.last_seen %}, up to 90 days{% endif %}.</p>
+ {{ data.chart }}</div>
+ <div class="card"><h2>One report, as received</h2><p class="sub">Exactly what the phone sent. Kept 90 days.</p>
+ {% if data.example %}<pre>{{ data.example }}</pre>
+ <p class="note mt10">Received {{ data.group.last_seen.day }} {{ data.group.last_seen.strftime("%b") }} (the day only). No time, address, account or install id.</p>{% else %}<p class="sub">Its reports are older than 90 days and have been deleted.</p>{% endif %}</div>
+</div>
+{% endblock %}

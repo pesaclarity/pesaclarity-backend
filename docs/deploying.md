@@ -90,6 +90,33 @@ gcloud run services logs read "$CLOUD_RUN_SERVICE" --region "$GCP_REGION" --limi
 gcloud run jobs executions list --job "$CLOUD_RUN_PURGE_JOB" --region "$GCP_REGION" --limit 5
 ```
 
+## Install counts, crash reports and the dashboard (ADR 0024)
+
+**Request logs.** The owner decided that Google keeps no request logs for the two routes that count and take crash reports. Add a Cloud Logging exclusion once (it also covers future revisions):
+
+```sh
+gcloud logging sinks update _Default --project "$GCP_PROJECT_ID" \
+  --add-exclusion=name=ngome-no-request-logs,description="ADR 0024: no request logs for app status and crash reports",filter='resource.type="cloud_run_revision" AND resource.labels.service_name="'"$CLOUD_RUN_SERVICE"'" AND log_id("run.googleapis.com/requests") AND (httpRequest.requestUrl:"/v1/app-status" OR httpRequest.requestUrl:"/v1/crash-reports")'
+gcloud logging sinks describe _Default --project "$GCP_PROJECT_ID"   # check it is listed
+```
+
+Those two routes lose their security logs; the token format check, the flood ceiling and its dashboard flag, and the crash reports' size and daily caps still apply. The server's own log line for them carries only the route template, status and duration.
+
+**The dashboard.** Set its origin (the service's URL, or a custom domain mapped to it), sync, then enrol two passkeys from a terminal (README, "Admin dashboard"):
+
+```sh
+gh variable set NGOME_ADMIN_ORIGIN --env production --body "https://<service url host>"
+gh workflow run "Sync settings"
+curl -X POST "$API/v1/admin/passkey-enrolments" -H "Authorization: Bearer $NGOME_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"label": "Phone"}'
+```
+
+Passkeys are bound to the origin's host name: moving the dashboard to another host means enrolling again.
+
+**Country.** Off until DB-IP Lite's CC BY 4.0 licence is confirmed on db-ip.com. Then build the image with `--build-arg DBIP_COUNTRY_LITE_MONTH=<YYYY-MM>` (add it to the Cloud Build trigger and `tool/cloudbuild.yaml`), set `NGOME_COUNTRY_LOOKUP_ENABLED=true` and `NGOME_COUNTRY_DB_PATH=/app/data/dbip-country-lite.mmdb`, and refresh the month in each month's first deploy.
+
+**The purge job** now also deletes closed counting periods, old crash reports and expired dashboard sessions, so point it at the new image after the deploy (see "After a deploy: the jobs' image").
+
 ## Adding R2
 
 1. In Cloudflare, create an R2 bucket with the EU jurisdiction, and an API token with Object Read & Write on that bucket only.

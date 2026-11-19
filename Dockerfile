@@ -15,6 +15,19 @@ COPY migrations ./migrations
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
+# Country lookup for install counts (ADR 0024) uses DB-IP IP to Country Lite (CC BY 4.0,
+# "IP Geolocation by DB-IP", https://db-ip.com). It is left out unless the build names a month,
+# for example --build-arg DBIP_COUNTRY_LITE_MONTH=2026-11, and stays off at run time until
+# NGOME_COUNTRY_LOOKUP_ENABLED=true. Refresh it monthly.
+FROM python:3.12-slim-bookworm AS country
+ARG DBIP_COUNTRY_LITE_MONTH=""
+RUN mkdir -p /data && if [ -n "$DBIP_COUNTRY_LITE_MONTH" ]; then \
+      python -c "import gzip, shutil, sys, urllib.request; \
+url = f'https://download.db-ip.com/free/dbip-country-lite-{sys.argv[1]}.mmdb.gz'; \
+shutil.copyfileobj(gzip.open(urllib.request.urlopen(url, timeout=60)), \
+open('/data/dbip-country-lite.mmdb', 'wb'))" "$DBIP_COUNTRY_LITE_MONTH"; \
+    fi
+
 FROM python:3.12-slim-bookworm AS runtime
 RUN groupadd --system --gid 10001 ngome \
     && useradd --system --uid 10001 --gid ngome --no-create-home ngome
@@ -22,6 +35,7 @@ WORKDIR /app
 COPY --from=build --chown=ngome:ngome /app/.venv /app/.venv
 COPY --from=build --chown=ngome:ngome /app/alembic.ini /app/alembic.ini
 COPY --from=build --chown=ngome:ngome /app/migrations /app/migrations
+COPY --from=country --chown=ngome:ngome /data /app/data
 # NGOME_MIGRATE_ON_START: each new revision brings the schema up to date before it takes
 # traffic (docs/deploying.md). Set it to false on the service to migrate only with the job.
 ENV PATH="/app/.venv/bin:$PATH" \

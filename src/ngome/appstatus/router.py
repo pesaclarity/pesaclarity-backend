@@ -3,26 +3,37 @@
 App status needs no account and sets no cookie. Neither the caller's address nor the query
 is logged or stored: the access log records only the route template and status
 (``ngome.api.app``), and Uvicorn's own access log is off.
+
+The check-in may carry the app's random monthly ``Count-Token`` header (ADR 0024), which
+``ngome.counting`` counts once a day and once a month as a keyed digest. It is a header so
+that request logs, which record the URL, never hold it. The address is used only to look up
+the country while answering, when that is on, and is then dropped.
 """
 
 import uuid
-from typing import Annotated, cast
+from datetime import datetime
+from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.exc import SQLAlchemyError
 
 from ngome.api.deps import SessionDep, SettingsDep
 from ngome.appstatus import service
 from ngome.appstatus.schemas import Build, NoticeCreate, NoticeOut, Platform
 from ngome.appstatus.signing import AppStatusSigner
 from ngome.appstatus.versions import MAX_VERSION_LENGTH, VERSION_PATTERN
-from ngome.core.security import constant_time_equals
+from ngome.core.logging import get_logger
+from ngome.core.security import constant_time_equals, utcnow
+from ngome.counting import service as counting
+from ngome.counting.country import CountryLookup
 
 router = APIRouter(prefix="/v1", tags=["app status"])
 admin_router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 _admin_bearer = HTTPBearer(auto_error=False)
+log = get_logger(__name__)
 
 
 def get_app_status_signer(request: Request) -> AppStatusSigner | None:
@@ -31,12 +42,14 @@ def get_app_status_signer(request: Request) -> AppStatusSigner | None:
 
 @router.get("/app-status")
 async def app_status(
+    request: Request,
     session: SessionDep,
     settings: SettingsDep,
     signer: Annotated[AppStatusSigner | None, Depends(get_app_status_signer)],
     version: Annotated[str, Query(max_length=MAX_VERSION_LENGTH, pattern=VERSION_PATTERN)],
     build: Build,
     platform: Platform,
+    count_token: Annotated[str | None, Header(alias="Count-Token", max_length=64)] = None,
 ) -> JSONResponse:
     """The newest version for this build and its active notices, signed with Ed25519.
 
@@ -45,12 +58,51 @@ async def app_status(
     """
     if signer is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "App status is not set up")
-    payload = await service.app_status(session, version=version, build=build, platform=platform)
+    now = utcnow()
+    payload = await service.app_status(
+        session, version=version, build=build, platform=platform, now=now
+    )
+    await _count(request, session, settings, payload, token=count_token, now=now)
     max_age = settings.app_status_cache_seconds
     return JSONResponse(
         signer.envelope(payload),
         headers={"Cache-Control": f"public, max-age={max_age}" if max_age else "no-store"},
     )
+
+
+async def _count(
+    request: Request,
+    session: SessionDep,
+    settings: SettingsDep,
+    payload: dict[str, Any],
+    *,
+    token: str | None,
+    now: datetime,
+) -> None:
+    """Count the check-in and the notices it got. A failure here never fails the answer."""
+    try:
+        await counting.record_reach(
+            session, (uuid.UUID(n["id"]) for n in payload["notices"]), now.date()
+        )
+        if token is None:
+            return
+        lookup = cast(CountryLookup | None, request.app.state.country_lookup)
+        country = None
+        if lookup is not None:
+            country = lookup.country(request.client.host if request.client else None)
+        await counting.record_check_in(
+            session,
+            settings,
+            request.app.state.count_gate,
+            token=token,
+            build=payload["build"],
+            version=payload["version"],
+            country=country,
+            now=now,
+        )
+    except SQLAlchemyError:
+        await session.rollback()
+        log.warning("counting.failed")
 
 
 async def require_admin(
