@@ -17,14 +17,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ngome.admin.downloads import summarise
 from ngome.admin.models import AdminEnrolment, AdminSession
 from ngome.admin.router import COOKIE
+from ngome.admin.views import installs_for
 from ngome.core.config import Settings
 from ngome.counting.models import DAY, MONTH, CountTotal
-from ngome.counting.suppress import shown_total, suppress
+from ngome.counting.suppress import Shown, derived, pair, shown_total, suppress, suppress_marked
+from ngome.crashes.models import CrashReportRow
 from tests.conftest import make_settings
 from tests.soft_passkey import SoftPasskey
 from tests.test_app_status import TEST_SEED
 
 ORIGIN = "https://admin.test"
+OTHER = "https://other.test"
 ADMIN_TOKEN = "test-admin-token-" + "z" * 32
 ADMIN = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
 SAME = {"Origin": ORIGIN}
@@ -54,17 +57,23 @@ def maker(app: FastAPI) -> async_sessionmaker[AsyncSession]:
     return sessions
 
 
-async def enrol(client: httpx.AsyncClient, passkey: SoftPasskey, label: str = "Phone") -> None:
-    minted = await client.post("/v1/admin/passkey-enrolments", json={"label": label}, headers=ADMIN)
+async def enrol(
+    client: httpx.AsyncClient, passkey: SoftPasskey, label: str = "Phone", origin: str = ORIGIN
+) -> None:
+    # The default origin is left out of the request, as a terminal would.
+    request: dict[str, str] = {"label": label} | ({} if origin == ORIGIN else {"origin": origin})
+    minted = await client.post("/v1/admin/passkey-enrolments", json=request, headers=ADMIN)
     assert minted.status_code == 201, minted.text
     url = minted.json()["url"]
-    assert url.startswith(f"{ORIGIN}/admin/enrol/")
+    assert url.startswith(f"{origin}/admin/enrol/")
     token = url.rsplit("/", 1)[1]
     page = await client.get(f"/admin/enrol/{token}")
     assert "Add a passkey" in page.text
-    start = await client.post("/admin/enrol/options", json={"token": token}, headers=SAME)
+    here = {"Origin": origin}
+    start = await client.post("/admin/enrol/options", json={"token": token}, headers=here)
     assert start.status_code == 200, start.text
     body = start.json()
+    assert body["options"]["rp"]["id"] == passkey.rp_id
     finish = await client.post(
         "/admin/enrol/verify",
         json={
@@ -72,20 +81,22 @@ async def enrol(client: httpx.AsyncClient, passkey: SoftPasskey, label: str = "P
             "challenge_id": body["challenge_id"],
             "credential": passkey.register(body["options"]),
         },
-        headers=SAME,
+        headers=here,
     )
     assert finish.status_code == 200, finish.text
     client.cookies.clear()
 
 
-async def sign_in(client: httpx.AsyncClient, passkey: SoftPasskey) -> httpx.Response:
-    start = await client.post("/admin/sign-in/options", headers=SAME)
+async def sign_in(
+    client: httpx.AsyncClient, passkey: SoftPasskey, origin: str = ORIGIN
+) -> httpx.Response:
+    start = await client.post("/admin/sign-in/options", headers={"Origin": origin})
     assert start.status_code == 200, start.text
     body = start.json()
     return await client.post(
         "/admin/sign-in/verify",
         json={"challenge_id": body["challenge_id"], "credential": passkey.sign_in(body["options"])},
-        headers=SAME,
+        headers={"Origin": origin},
     )
 
 
@@ -257,6 +268,56 @@ async def test_ceremonies_check_the_origin(client: httpx.AsyncClient) -> None:
     assert (await client.post("/admin/sign-in/options", headers=evil)).status_code == 403
 
 
+async def test_a_second_origin_has_its_own_passkeys(
+    app: FastAPI, settings: Settings, client: httpx.AsyncClient
+) -> None:
+    app.state.settings = settings.model_copy(update={"admin_extra_origins": [OTHER]})
+    first = SoftPasskey("admin.test", ORIGIN)
+    await enrol(client, first)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url=OTHER) as other:
+        second = SoftPasskey("other.test", OTHER)
+        await enrol(other, second, label="Mac", origin=OTHER)
+        response = await sign_in(other, second, origin=OTHER)
+        assert response.status_code == 200, response.text
+        assert COOKIE in response.cookies
+        other.cookies.clear()
+        # A passkey works only on the host it was added on, whichever origin the page claims.
+        assert (await sign_in(other, first, origin=OTHER)).status_code == 400
+        start = (await other.post("/admin/sign-in/options", headers={"Origin": OTHER})).json()
+        body = {
+            "challenge_id": start["challenge_id"],
+            "credential": first.sign_in(start["options"], origin=OTHER),
+        }
+        refused = await other.post("/admin/sign-in/verify", json=body, headers={"Origin": OTHER})
+        assert refused.status_code == 400
+    assert (await sign_in(client, second)).status_code == 400
+    assert (await sign_in(client, first)).status_code == 200
+    listed = await client.get("/v1/admin/passkeys", headers=ADMIN)
+    assert [p["label"] for p in listed.json()] == ["Phone", "Mac"]
+
+
+async def test_enrolment_links_open_only_on_the_dashboards_origins(
+    app: FastAPI, settings: Settings, client: httpx.AsyncClient
+) -> None:
+    for origin in (OTHER, "https://evil.example"):
+        minted = await client.post(
+            "/v1/admin/passkey-enrolments", json={"label": "x", "origin": origin}, headers=ADMIN
+        )
+        assert minted.status_code == 422
+    from_other = {"Origin": OTHER}
+    assert (await client.post("/admin/sign-in/options", headers=from_other)).status_code == 403
+    app.state.settings = settings.model_copy(update={"admin_extra_origins": [OTHER]})
+    assert (await client.post("/admin/sign-in/options", headers=from_other)).status_code == 200
+
+
+def test_extra_origins_need_the_main_one(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="admin_extra_origins needs admin_origin"):
+        make_settings(tmp_path, admin_extra_origins=[OTHER])
+    with pytest.raises(ValueError, match="admin_extra_origins"):
+        make_settings(tmp_path, admin_origin=ORIGIN, admin_extra_origins=["other.test"])
+
+
 async def test_removing_a_passkey_ends_its_sessions(
     client: httpx.AsyncClient, signed_in: SoftPasskey
 ) -> None:
@@ -396,14 +457,23 @@ async def test_crash_pages(app: FastAPI, client: httpx.AsyncClient, signed_in: S
 
     detail = await client.get(f"/admin/crashes/{group_link}")
     assert detail.status_code == 200
-    assert "Play 2" in detail.text
-    assert "F-Droid 1" in detail.text
-    assert "13: 3" in detail.text
+    builds = detail.text.split(">Build</h3>", 1)[1].split("</table>", 1)[0]
+    assert ">Play</td>" in builds
+    assert '<td class="n">2</td>' in builds
+    assert ">F-Droid</td>" in builds
+    assert ">Android 13</td>" in detail.text
     assert "&#34;build_id&#34;: &#34;b6f1c4e09a2d7f35&#34;" in detail.text
     missing = await client.get(
         f"/admin/crashes/{secrets.token_hex(16)[:8]}-0000-0000-0000-000000000000"
     )
     assert missing.status_code == 404
+    assert "No such crash group" in missing.text
+
+    # The list's filters go with a group's link, and its page reads them.
+    foss = await client.get("/admin/crashes", params={"build": "foss"})
+    assert f'href="/admin/crashes/{group_link}?build=foss"' in foss.text
+    only_foss = await client.get(f"/admin/crashes/{group_link}", params={"build": "foss"})
+    assert ">Play</td>" not in only_foss.text.split(">Build</h3>", 1)[1].split("</table>", 1)[0]
 
 
 def test_downloads_summary_counts_the_last_30_days() -> None:
@@ -420,4 +490,165 @@ def test_downloads_summary_counts_the_last_30_days() -> None:
     # 80 - 50 for the old release (its total 30 days back), all 7 of the new one.
     assert summary.by_file == [("pesaclarity-play.apk", 37), ("pesaclarity-foss.apk", 3)]
     assert summary.total == 40
+    # The snapshot does not go back 60 days, so there is nothing to compare with.
+    assert summary.previous_total is None
+
+
+def test_downloads_summary_compares_with_the_30_days_before() -> None:
+    text = (
+        "date,release,file,downloads\n"
+        "2026-09-01,v0.3.0,pesaclarity-play.apk,10\n"
+        "2026-10-18,v0.3.0,pesaclarity-play.apk,50\n"
+        "2026-11-17,v0.3.0,pesaclarity-play.apk,80\n"
+    )
+    summary = summarise(text)
+    assert summary is not None
+    assert summary.total == 30
+    assert summary.previous_total == 40
+    assert summary.files[0].previous == 40
     assert summarise("date,release,file,downloads\n") is None
+
+
+def test_suppression_says_why_a_cell_is_hidden() -> None:
+    shown = suppress_marked({"play": 2610, "foss": 403, "website": 396, "ios": 3})
+    assert shown["ios"] == Shown(None, "small")
+    # Website is not small: it is hidden so iPhone cannot be worked out from the total.
+    assert shown["website"] == Shown(None, "secondary")
+    assert shown["play"] == Shown(2610)
+    assert suppress_marked({"a": 5, "b": 4, "c": 40})["c"] == Shown(40)
+
+
+def test_sums_beside_a_table_cannot_give_a_hidden_cell_away() -> None:
+    raw = {"0.6.0": 900, "0.5.2": 500, "0.5.1": 20, "0.4.0": 50, "0.3.0": 4}
+    shown = suppress_marked(raw)
+    assert shown["0.5.1"] == Shown(None, "secondary")
+    # "Older" holds 0.4.0 (shown, 50) and 0.3.0 (hidden): 54 less 50 would be 0.3.0.
+    assert derived(shown, raw, ["0.4.0", "0.3.0"]) == Shown(None, "secondary")
+    # Holding both hidden cells, the sum gives neither away.
+    assert derived(shown, raw, ["0.5.1", "0.3.0"]) == Shown(24)
+    assert derived(shown, raw, ["0.3.0"]) == Shown(None, "small")
+    # Two parts of a shown total: if one is hidden, the other would give it away.
+    assert pair(3000, 4) == (Shown(None, "secondary"), Shown(None, "small"))
+    assert pair(3000, 400) == (Shown(3000), Shown(400))
+
+
+def test_installs_for_some_builds_follow_the_builds_suppression() -> None:
+    cells = {"all": {"all": 3412}, "build": {"play": 2610, "foss": 403, "website": 396, "ios": 3}}
+    assert installs_for(cells, None) == Shown(3412)
+    assert installs_for(cells, ("ios",)) == Shown(None, "small")
+    assert installs_for(cells, ("website",)) == Shown(None, "secondary")
+    # Android is three builds, one of them hidden: shown, it would give iPhone away.
+    assert installs_for(cells, ("play", "foss", "website")) == Shown(None, "secondary")
+    assert installs_for(cells, ("play", "foss")) == Shown(3013)
+
+
+async def test_pages_mark_hidden_cells_and_derived_sums(
+    client: httpx.AsyncClient,
+    signed_in: SoftPasskey,
+    maker: async_sessionmaker[AsyncSession],
+) -> None:
+    month = datetime.now(UTC).date().replace(day=1)
+    previous = (month - timedelta(days=1)).replace(day=1)
+    await add_totals(
+        maker,
+        MONTH,
+        month,
+        {
+            "all": {"all": 1574},
+            "build": {"play": 1200, "foss": 370, "ios": 4},
+            # The newest release has 4: the stacked bar must not show "earlier" (1,570).
+            "version": {
+                "0.7.0": 4,
+                "0.6.0": 900,
+                "0.5.2": 500,
+                "0.5.1": 20,
+                "0.5.0": 60,
+                "0.4.0": 50,
+                "0.3.0": 40,
+            },
+        },
+    )
+    await add_totals(maker, MONTH, previous, {"all": {"all": 1000}, "version": {"0.6.0": 1000}})
+    page = (await client.get("/admin")).text
+    assert "hidden</span>" in page  # F-Droid hidden beside iPhone's 4
+    assert ">370<" not in page
+    assert "1,570" not in page
+    assert ">20<" not in page  # 0.5.1, the next smallest version, is hidden too
+    assert " style=" not in page
+    assert "<style" not in page
+
+    monthly = await client.get("/admin/monthly.csv")
+    assert monthly.headers["content-disposition"].startswith("attachment;")
+    rows = monthly.text.splitlines()
+    assert rows[-1].endswith(",1574,<10,hidden")
+    assert "1570" not in monthly.text
+
+    csv_text = (await client.get("/admin/installs.csv", params={"dim": "build"})).text
+    assert "iPhone,<10," in csv_text
+    assert "F-Droid,hidden," in csv_text
+    assert ",370," not in csv_text
+    versions = (await client.get("/admin/adoption.csv")).text
+    assert "0.7.0" in versions
+    assert ",4" not in versions.replace(",40", "")
+
+
+async def test_filters_are_checked_and_said_when_dropped(
+    client: httpx.AsyncClient, signed_in: SoftPasskey
+) -> None:
+    page = await client.get("/admin/crashes", params={"days": "45", "build": "nokia"})
+    assert page.status_code == 200
+    assert "is not a choice for days" in page.text
+    assert "is not a choice for build" in page.text
+    assert "Reports, 30 days" in page.text.replace("REPORTS", "Reports")
+    clash = await client.get("/admin/crashes", params={"build": "ios", "platform": "android"})
+    assert "is not an Android build" in clash.text
+
+
+async def test_crash_rate_uses_one_month_on_both_sides(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    signed_in: SoftPasskey,
+    maker: async_sessionmaker[AsyncSession],
+) -> None:
+    from tests.test_crash_reports import report  # noqa: PLC0415
+
+    today = datetime.now(UTC).date()
+    month = today.replace(day=1)
+    await add_totals(maker, MONTH, month, {"all": {"all": 2000}})
+    for _ in range(4):
+        assert (await client.post("/v1/crash-reports", json=report())).status_code == 202
+    # A report from before this month counts in a 30-day window but not in the rate.
+    async with maker() as session:
+        row = (await session.scalars(select(CrashReportRow))).first()
+        assert row is not None
+        session.add(
+            CrashReportRow(
+                group_id=row.group_id,
+                received_on=month - timedelta(days=1),
+                app="0.5.2",
+                build_number=412,
+                build="play",
+                os="Android 13",
+                cpu="arm64",
+                error="TypeError",
+                stack=row.stack,
+            )
+        )
+        await session.commit()
+    page = (await client.get("/admin/crashes")).text
+    assert ">2.0<" in page  # 4 reports this month per 2,000 installs, times 1,000
+    assert "a floor" in page
+
+
+async def test_notices_and_learning_pages(
+    app: FastAPI, client: httpx.AsyncClient, signed_in: SoftPasskey
+) -> None:
+    notices = await client.get("/admin/notices")
+    assert notices.status_code == 200
+    assert "No notices yet" in notices.text
+    learning = await client.get("/admin/learning")
+    assert learning.status_code == 200
+    assert "No rounds have been recorded" in learning.text
+    for path in ("/admin/notices", "/admin/learning", "/admin/installs.csv"):
+        client.cookies.clear()
+        assert (await client.get(path)).status_code == 303

@@ -49,10 +49,13 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def rp_id(settings: Settings) -> str:
-    if settings.admin_origin is None:
+def rp_id(origin: str) -> str:
+    """The relying party id for one of the dashboard's origins: its host. The router passes
+    only origins from ``Settings.admin_origins``."""
+    host = urlsplit(origin).hostname
+    if not host:
         raise PasskeyError
-    return urlsplit(settings.admin_origin).hostname or ""
+    return host
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,11 +131,11 @@ async def _take_challenge(
     return row
 
 
-async def registration_options(session: AsyncSession, settings: Settings, token: str) -> Ceremony:
+async def registration_options(session: AsyncSession, origin: str, token: str) -> Ceremony:
     enrolment = await _open_enrolment(session, token, utcnow())
     existing = await session.scalars(select(AdminPasskey.credential_id))
     options = generate_registration_options(
-        rp_id=rp_id(settings),
+        rp_id=rp_id(origin),
         rp_name=RP_NAME,
         user_id=_USER_ID,
         user_name=_USER_NAME,
@@ -151,7 +154,7 @@ async def registration_options(session: AsyncSession, settings: Settings, token:
 
 async def register(
     session: AsyncSession,
-    settings: Settings,
+    origin: str,
     *,
     token: str,
     challenge_id: str,
@@ -168,8 +171,8 @@ async def register(
         verified = verify_registration_response(
             credential=credential,
             expected_challenge=row.challenge,
-            expected_rp_id=rp_id(settings),
-            expected_origin=settings.admin_origin or "",
+            expected_rp_id=rp_id(origin),
+            expected_origin=origin,
             require_user_verification=True,
         )
     except (InvalidRegistrationResponse, ValueError, KeyError, TypeError):
@@ -188,10 +191,10 @@ async def register(
     return passkey
 
 
-async def sign_in_options(session: AsyncSession, settings: Settings) -> Ceremony:
+async def sign_in_options(session: AsyncSession, origin: str) -> Ceremony:
     # No allow_credentials: the passkeys are discoverable, so the page need not list ids.
     options = generate_authentication_options(
-        rp_id=rp_id(settings), user_verification=UserVerificationRequirement.REQUIRED
+        rp_id=rp_id(origin), user_verification=UserVerificationRequirement.REQUIRED
     )
     challenge_id = await _new_challenge(session, "sign_in", options.challenge, None)
     return Ceremony(challenge_id, json.loads(options_to_json(options)))
@@ -208,7 +211,7 @@ def _credential_id(credential: dict[str, Any]) -> bytes:
 
 
 async def sign_in(
-    session: AsyncSession, settings: Settings, *, challenge_id: str, credential: dict[str, Any]
+    session: AsyncSession, origin: str, *, challenge_id: str, credential: dict[str, Any]
 ) -> AdminPasskey:
     """Verify an assertion from a passkey on the allow-list."""
     now = utcnow()
@@ -225,8 +228,8 @@ async def sign_in(
         verified = verify_authentication_response(
             credential=credential,
             expected_challenge=row.challenge,
-            expected_rp_id=rp_id(settings),
-            expected_origin=settings.admin_origin or "",
+            expected_rp_id=rp_id(origin),
+            expected_origin=origin,
             credential_public_key=passkey.public_key,
             credential_current_sign_count=passkey.sign_count,
             require_user_verification=True,

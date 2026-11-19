@@ -1,15 +1,24 @@
-{% extends "base.html" %}{% set page_title = "Crashes" %}
+{% extends "base.html" %}{% from "_ui.html" import kpi, menu, seg, notes, how, icon %}{% set page_title = "Crashes" %}{% set f = data.filters %}
 {% block main %}
-<div class="head"><div><h1>Crashes</h1><div class="sub">Reports people chose to send, grouped by error and the first frames. Last {{ data.days }} days.</div></div>
-<div class="filters">
-<details class="pick"><summary class="pill">{{ data.days }} days ▾</summary><div class="menu">{% for d in windows %}<a href="/admin/crashes?days={{ d }}{% if data.build %}&amp;build={{ data.build }}{% endif %}"{% if d == data.days %} class="on"{% endif %}>{{ d }} days</a>{% endfor %}</div></details>
-<details class="pick"><summary class="pill">{{ builds[data.build] if data.build else "All builds" }} ▾</summary><div class="menu"><a href="/admin/crashes?days={{ data.days }}"{% if not data.build %} class="on"{% endif %}>All builds</a>{% for key, name in builds.items() %}<a href="/admin/crashes?days={{ data.days }}&amp;build={{ key }}"{% if key == data.build %} class="on"{% endif %}>{{ name }}</a>{% endfor %}</div></details>
-</div></div>
-<div class="grid tiles">
-{% for tile in data.tiles %} <div class="card"><div class="label">{{ tile.label }}</div><div class="num">{{ tile.value }}</div>{% if tile.delta %}<div class="delta">{{ tile.delta }}</div>{% endif %}</div>
-{% endfor %}</div>
-<div class="card mt16">{% if data.groups %}<table><thead><tr><th>Error and where</th><th class="hide-s">Versions</th><th class="n">Reports</th><th class="hide-s">Trend</th><th class="n hide-s">First seen</th><th class="n">Last seen</th></tr></thead><tbody>
-{% for g in data.groups %}<tr><td><a class="row" href="/admin/crashes/{{ g.id }}"><strong>{{ g.error }}</strong>{% if g.is_new %} <span class="tag new">new</span>{% endif %}{% if g.function %}<div class="mono sup">{{ g.function }}</div><div class="mono sup hide-s">{{ g.location }}</div>{% else %}<div class="mono sup">{{ g.first_frame }}</div><div class="sup hide-s">Not decoded</div>{% endif %}</a></td><td class="hide-s">{{ g.versions }}</td><td class="n">{{ g.reports }}</td><td class="hide-s">{{ g.trend }}</td><td class="n hide-s">{{ g.first_seen }}</td><td class="n">{{ g.last_seen }}</td></tr>
-{% endfor %}</tbody></table>{% else %}<p class="sub">No reports in these {{ data.days }} days.</p>{% endif %}</div>
-<p class="note">Reports are deleted after 90 days; a group keeps only its counts and dates. Nothing here names a person, phone or account.</p>
+<div class="head"><div><h1>Crashes</h1><div class="sub">Reports people chose to send, grouped by error and the first frames in our code.</div></div></div>
+<div class="filters">{{ seg("Period", options("/admin/crashes", f, "days", [(7, "7 d"), (30, "30 d"), (90, "90 d")])) }}{{ menu("Build", build_names[f.build] if f.build else "All builds", options("/admin/crashes", f, "build", build_items, platform=None)) }}{{ menu("Platform", platform_names[f.platform] if f.platform else "All", options("/admin/crashes", f, "platform", platform_items, build=None)) }}{% if f.version %}<a class="pick" href="/admin/crashes?{{ f.query(version=None) }}"><b>Version</b> {{ f.version }} ✕</a>{% else %}<span class="pick off"><b>Version</b> All versions</span>{% endif %}<span class="compare">Compared with the {{ data.days }} days before</span></div>
+{{ notes(f) }}
+<div class="grid kpis">{% for t in data.tiles %}{{ kpi(t) }}{% endfor %}</div>
+{% if data.groups %}
+<section class="card mt" aria-labelledby="perday-h"><div class="card-h"><div><h2 id="perday-h">Reports per day</h2><div class="sub">All groups, last {{ data.days }} days.</div></div></div>
+{{ data.chart }}</section>
+<section class="card mt" aria-labelledby="groups-h"><div class="card-h"><div><h2 id="groups-h">Crash groups</h2><div class="sub">A group is the error type plus the first three frames in our code.</div></div>{{ seg("Sort", options("/admin/crashes", f, "sort", [("reports", "Reports"), ("newest", "Newest"), ("last", "Last seen")])) }}</div>
+<table class="gtable"><caption class="sr">Crash groups, last {{ data.days }} days</caption><thead><tr><th>Error and where</th><th>Versions</th><th class="n">Reports</th><th class="n">Share</th><th>{{ data.days }} days</th><th class="n">First seen</th><th class="n">Last seen</th><th><span class="sr">Open</span></th></tr></thead><tbody>
+{% for g in data.groups %}{% set href = "/admin/crashes/" ~ g.id ~ ("?" ~ f.carried() if f.carried() else "") %}<tr class="click"><td><a href="{{ href }}"><span class="err-name">{{ g.error }}</span>{% if g.is_new %} <span class="tag red">new</span>{% elif g.quiet %} <span class="tag">quiet {{ 14 }} d</span>{% endif %}<div class="mono where">{% if g.function %}{{ g.function }}<div class="hide-s faint">{{ g.location }}</div>{% else %}{{ g.first_frame }} <span class="faint">· not decoded yet</span>{% endif %}</div></a></td>
+<td><div class="vchips">{% for v in g.versions %}<a href="/admin/crashes?{{ f.query(version=v) }}"><span>{{ v }}</span></a>{% endfor %}{% if g.more_versions %}<span>+{{ g.more_versions }}</span>{% endif %}</div></td>
+<td class="n">{{ g.reports }}</td><td class="n muted">{{ g.share }}</td><td>{{ g.trend }}<span class="sr">{{ g.reports }} reports in {{ data.days }} days</span></td><td class="n muted">{{ g.first_seen }}</td><td class="n">{{ g.last_seen }}</td><td class="chev" aria-hidden="true">›</td></tr>
+{% endfor %}</tbody></table>
+<div class="glist">{% for g in data.groups %}<a class="gitem" href="/admin/crashes/{{ g.id }}{% if f.carried() %}?{{ f.carried() }}{% endif %}"><div><span class="err-name">{{ g.error }}</span>{% if g.is_new %} <span class="tag red">new</span>{% elif g.quiet %} <span class="tag">quiet 14 d</span>{% endif %}<div class="mono where">{{ g.function or "Not decoded yet" }}</div></div><div class="gright"><div class="gnum">{{ g.reports }}</div>{{ g.trend }}</div><div class="meta">{{ g.versions|join(", ") }}{% if g.more_versions %} +{{ g.more_versions }}{% endif %} · first {{ g.first_seen }} · last {{ g.last_seen }}</div></a>{% endfor %}</div></section>
+<div class="banner mt" role="note"><span aria-hidden="true">ⓘ</span><div><b>Crash rate is a floor, not a crash-free figure.</b> Reports are opt-in per crash and are never linked to an install, so the share of installs that crashed cannot be measured. Reports per 1,000 installs in the same month is shown instead.</div></div>
+{% else %}
+<section class="card mt"><div class="empty">{{ icon("tick") }}<h3>No crash reports in the last {{ data.days }} days</h3>
+<p>The app asks before sending each report, so this means no one sent one, not that nothing failed.{% if data.days < 90 or f.builds() or f.version %} Try a longer period or fewer filters.{% endif %}</p>
+<p class="mt12">{% if data.days < 90 %}<a href="/admin/crashes?{{ f.query(days=90) }}">Show 90 days</a>{% endif %}{% if data.days < 90 and (f.builds() or f.version) %} · {% endif %}{% if f.builds() or f.version %}<a href="/admin/crashes?days={{ data.days }}">Clear filters</a>{% endif %}</p></div></section>
+{% endif %}
+{{ how(country_on) }}
 {% endblock %}
