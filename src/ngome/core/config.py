@@ -104,6 +104,15 @@ class Settings(BaseSettings):
     )
     app_status_cache_seconds: int = Field(default=300, ge=0, le=3600)
 
+    proxy_hops: int = Field(
+        default=1,
+        ge=0,
+        le=5,
+        description="Where the caller's address sits in X-Forwarded-For, counted from the "
+        "right: 1 on Cloud Run (Google appends it), 2 behind a Google load balancer. 0 uses "
+        "the socket's peer. Entries further left are written by the caller and never used.",
+    )
+
     # Counting active installs from the app status check-in (ADR 0024, ``ngome.counting``).
     counting_enabled: bool = Field(
         default=True,
