@@ -1,0 +1,33 @@
+{% extends "base.html" %}{% from "_bars.html" import bar_rows, month_pick %}{% set page_title = "Overview" %}
+{% block main %}
+<div class="head"><div><h1>Overview</h1><div class="sub">{{ month_name(data.month) }}, up to {{ data.as_of }} (UTC).</div></div>
+{{ month_pick(data.months, data.month, "/admin") }}</div>
+<div class="grid tiles">
+{% for tile in data.tiles %} <div class="card{% if loop.first %} lead{% endif %}"><div class="label">{{ tile.label }}</div><div class="num">{{ tile.value }}</div><div class="delta">{{ tile.delta }}</div></div>
+{% endfor %}</div>
+<div class="grid two mt16">
+ <div class="card"><h2>Daily active installs</h2><p class="sub">Distinct monthly tokens seen each day. Phones that switched counting off are not in it. Days under 10 are left out.</p>
+ {{ data.daily_chart }}</div>
+ <div class="card"><h2>Versions this month</h2><p class="sub">The version each phone had when first counted this month.</p>
+ <table><tbody>{{ bar_rows(data.versions) }}</tbody></table></div>
+</div>
+<div class="grid half mt16">
+ <div class="card"><h2>Builds this month</h2><p class="sub">Where each counted phone got the app.</p>
+ <table><tbody>{{ bar_rows(data.builds) }}</tbody></table></div>
+ <div class="card" id="notices"><h2>Notice reach</h2><p class="sub">Check-ins whose answer carried the notice. Counts only, never who.</p>
+ {% if data.notices %}<table><thead><tr><th>Notice</th><th class="n">Shown to</th><th class="n hide-s">Since</th></tr></thead><tbody>
+ {% for notice in data.notices %}<tr><td>{{ notice.title }} <span class="tag{% if notice.must_update %} new{% endif %}">{{ notice.tag }}</span></td><td class="n">{{ notice.reach }}</td><td class="n hide-s">{{ notice.since }}</td></tr>
+ {% endfor %}</tbody></table>{% else %}<p class="sub">No notice has been shown yet.</p>{% endif %}</div>
+</div>
+<div class="grid half mt16">
+ <div class="card"><h2>Downloads by file, 30 days</h2><p class="sub">From the daily snapshot on the <span class="mono">stats</span> branch of pesaclarity/.github.</p>
+ {% if data.downloads %}<table><thead><tr><th>File</th><th class="n">Downloads</th></tr></thead><tbody>
+ {% for name, n in data.downloads.by_file %}<tr><td class="mono">{{ name }}</td><td class="n">{{ "{:,}".format(n) }}</td></tr>
+ {% endfor %}</tbody></table>{% else %}<p class="sub">The snapshot could not be read just now.</p>{% endif %}</div>
+ <div class="card" id="learning"><h2>Federated learning</h2><p class="sub">From the aggregator, when it runs.</p>
+ <dl class="kv"><dt>Status</dt><dd>Not running yet: no rounds have been recorded</dd>
+ <dt>Smallest cohort</dt><dd>{{ data.fl_min_cohort }} phones (setting)</dd><dt>Privacy budget</dt><dd>Published with each model release</dd></dl>
+ <p class="note mt14">This card fills in once the aggregator stores its rounds, cohort sizes and privacy spend (0024, stage 5).</p></div>
+</div>
+<p class="note">Counts under 10 show as &lt;10.{% if data.country_on %} Country data: <a href="{{ attribution_url }}">{{ attribution }}</a> (CC BY 4.0). The address is used for the lookup and then dropped.{% endif %}</p>
+{% endblock %}

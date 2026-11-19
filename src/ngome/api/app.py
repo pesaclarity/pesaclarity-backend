@@ -5,8 +5,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
 
 from ngome import __version__
+from ngome.admin import router as admin_router
+from ngome.admin.downloads import HttpDownloadsSource
 from ngome.api.routes import account, health
 from ngome.appstatus import router as app_status_router
 from ngome.appstatus.signing import AppStatusSigner
@@ -15,6 +18,9 @@ from ngome.auth.google import build_google_verifier
 from ngome.auth.providers import build_email_sender
 from ngome.core.config import Settings, get_settings
 from ngome.core.logging import configure_logging, get_logger
+from ngome.counting.country import build_country_lookup
+from ngome.counting.service import FloodGate
+from ngome.crashes import router as crashes_router
 from ngome.db.migrate import upgrade_to_head
 from ngome.db.session import create_engine, create_sessionmaker
 from ngome.integrity import router as integrity_router
@@ -25,6 +31,16 @@ from ngome.vault import router as vault_router
 from ngome.vault.storage import build_blob_store
 
 log = get_logger("ngome.http")
+
+# The dashboard's headers (ADR 0024): its own files only, never framed, never cached.
+ADMIN_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    ),
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
 
 
 def _route_template(request: Request) -> str:
@@ -72,6 +88,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.app_status_signer = (
         AppStatusSigner.from_base64(seed.get_secret_value()) if seed else None
     )
+    app.state.count_gate = FloodGate(settings.counting_max_new_per_hour)
+    app.state.country_lookup = build_country_lookup(settings)
+    app.state.downloads_source = (
+        HttpDownloadsSource(settings.downloads_csv_url) if settings.downloads_csv_url else None
+    )
 
     @app.middleware("http")
     async def access_log(
@@ -79,6 +100,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Response:
         started = time.perf_counter()
         response = await call_next(request)
+        if request.url.path == "/admin" or request.url.path.startswith("/admin/"):
+            response.headers.update(ADMIN_HEADERS)
         log.info(
             "http.request",
             method=request.method,
@@ -96,4 +119,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(privacy_router.router)
     app.include_router(app_status_router.router)
     app.include_router(app_status_router.admin_router)
+    app.include_router(crashes_router.router)
+    app.include_router(admin_router.web)
+    app.include_router(admin_router.api)
+    if settings.admin_origin is not None:
+        app.mount(
+            "/admin/static",
+            StaticFiles(packages=[("ngome.admin", "static")]),
+            name="admin-static",
+        )
     return app

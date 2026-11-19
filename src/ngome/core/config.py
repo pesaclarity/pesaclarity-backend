@@ -103,6 +103,55 @@ class Settings(BaseSettings):
     )
     app_status_cache_seconds: int = Field(default=300, ge=0, le=3600)
 
+    # Counting active installs from the app status check-in (ADR 0024, ``ngome.counting``).
+    counting_enabled: bool = Field(
+        default=True,
+        description="Count the random monthly Count-Token on app status check-ins. Off "
+        "ignores the header; the check-in is answered either way.",
+    )
+    counting_max_new_per_hour: int = Field(
+        default=600,
+        ge=1,
+        le=1_000_000,
+        description="Flood ceiling: new tokens counted per hour by one instance. Above it, "
+        "tokens are not counted and the hour is marked as a flood on the dashboard.",
+    )
+    counting_max_per_period: int = Field(
+        default=1_000_000,
+        ge=1,
+        description="Most tokens counted in one day or month, to protect the database.",
+    )
+    # Country by month, from the DB-IP IP to Country Lite database (CC BY 4.0). Off until the
+    # owner has confirmed the licence on db-ip.com; off, every install counts as "Unknown".
+    country_lookup_enabled: bool = False
+    country_db_path: Path | None = Field(
+        default=None,
+        description="The DB-IP IP to Country Lite MMDB file, read into memory at start.",
+    )
+
+    # Crash reports (``POST /v1/crash-reports``), sent only when the person says yes.
+    crash_reports_enabled: bool = True
+    crash_reports_max_per_day: int = Field(default=2000, ge=1, le=1_000_000)
+    retention_crash_report_days: int = Field(default=90, ge=1, le=365)
+    retention_crash_group_days: int = Field(default=365, ge=1, le=3650)
+    retention_daily_count_days: int = Field(
+        default=395,
+        ge=1,
+        description="Daily install totals and notice reach (13 months).",
+    )
+
+    # The admin dashboard (``/admin``), opened only with an enrolled passkey. Both unset
+    # turn it off. ``admin_origin`` is the dashboard's exact origin, such as
+    # ``https://api.example.org``; the passkey's relying party id is its host.
+    admin_origin: str | None = Field(default=None, pattern=r"^https?://[a-z0-9.-]+(:\d+)?$")
+    admin_session_hours: int = Field(default=12, ge=1, le=24)
+    admin_enrolment_minutes: int = Field(default=10, ge=1, le=60)
+    downloads_csv_url: str | None = Field(
+        default="https://raw.githubusercontent.com/pesaclarity/.github/stats/stats/downloads.csv",
+        description="GitHub's daily download counters, read for the dashboard. Unset hides "
+        "the downloads cards.",
+    )
+
     vault_max_backup_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
     vault_keep_backups: int = Field(default=10, ge=1, le=100)
     vault_max_account_bytes: int = Field(
@@ -195,6 +244,14 @@ class Settings(BaseSettings):
                 raise ValueError("app_status_signing_seed must be base64") from exc
             if len(seed) != _ED25519_SEED_BYTES:
                 raise ValueError("app_status_signing_seed must be 32 bytes, base64-encoded")
+        if self.country_lookup_enabled and self.country_db_path is None:
+            raise ValueError("country_db_path is required when country_lookup_enabled is on")
+        if (
+            self.admin_origin is not None
+            and self.environment == "production"
+            and not self.admin_origin.startswith("https://")
+        ):
+            raise ValueError("admin_origin must be https in production")
         return self
 
     @model_validator(mode="after")

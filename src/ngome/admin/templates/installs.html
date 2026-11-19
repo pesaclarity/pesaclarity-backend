@@ -1,0 +1,24 @@
+{% extends "base.html" %}{% from "_bars.html" import bar_rows, month_pick %}{% set page_title = "Installs" %}
+{% block main %}
+<div class="head"><div><h1>Installs by country</h1><div class="sub">Monthly active installs, {{ month_name(data.month) }}. One dimension at a time: no country by version.</div></div>
+<div class="filters">{{ month_pick(data.months, data.month, "/admin/installs") }}</div></div>
+<div class="grid two">
+ <div class="card"><h2>Countries</h2>
+ {% if data.country_on %}<p class="sub">From the address of each first check-in this month, looked up on the server and then dropped.</p>
+ {% if data.countries %}<table><thead><tr><th>Country</th><th></th><th class="n">Installs</th><th class="n hide-s">Share</th></tr></thead><tbody>{{ bar_rows(data.countries) }}</tbody></table>
+ {% else %}<p class="sub">No installs counted by country this month yet.</p>{% endif %}
+ <p class="note">Cells under 10 are hidden as &lt;10, and so are cells that would let a hidden one be worked out from the total.
+ "Unknown" is addresses the database does not place.</p>
+ {% else %}<p class="sub">Country lookup is off (<span class="mono">NGOME_COUNTRY_LOOKUP_ENABLED</span>) until the DB-IP Lite licence is confirmed. Installs are still counted by version and build, without a country.</p>{% endif %}</div>
+ <div class="grid start">
+  {% if data.country_on %}<div class="card"><div class="label">Countries with 10 or more</div><div class="num">{{ data.shown }}</div><div class="delta">{{ data.hidden }} more under 10</div></div>{% endif %}
+  <div class="card"><h2>What is stored</h2><dl class="kv mt10">
+  <dt>Per month</dt><dd>Counts by country, version and build, kept for good</dd>
+  <dt>Per day</dt><dd>Counts by version and build (no country), kept 13 months</dd>
+  <dt>This month's set</dt><dd>Keyed digests of tokens, nothing else; deleted on the 2nd of next month</dd>
+  <dt>Addresses</dt><dd>Never stored or logged</dd></dl></div>
+  <div class="card"><h2>Flood check</h2><p class="sub m0">{% if data.flood_hours %}The ceiling ({{ "{:,}".format(data.ceiling) }} new tokens per hour) was reached in {{ data.flood_hours }} hour{% if data.flood_hours != 1 %}s{% endif %}; {{ "{:,}".format(data.flood_dropped) }} check-ins were not counted. Last alert: {{ data.last_flood }}.{% else %}New tokens per hour stayed under the ceiling ({{ "{:,}".format(data.ceiling) }}). Last alert: none.{% endif %}</p></div>
+ </div>
+</div>
+{% if data.country_on %}<p class="note"><a href="{{ attribution_url }}">{{ attribution }}</a> (db-ip.com), CC BY 4.0.</p>{% endif %}
+{% endblock %}
