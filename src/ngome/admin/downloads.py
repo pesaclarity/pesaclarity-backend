@@ -21,6 +21,14 @@ log = get_logger(__name__)
 
 CACHE_SECONDS = 6 * 3600
 MAX_CSV_BYTES = 5 * 1024 * 1024
+# Only the app itself counts as a download: releases also carry store screenshots, the
+# update manifest and checksums (the screenshots releases' PNGs and manifest.json), which
+# are fetched for other reasons.
+APP_SUFFIXES = (".apk", ".ipa")
+
+
+def is_app_file(name: str) -> bool:
+    return name.lower().endswith(APP_SUFFIXES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +40,7 @@ class FileDownloads:
 
 @dataclass(frozen=True, slots=True)
 class Downloads:
-    as_of: date
+    as_of: date  # the day of the newest snapshot used: GitHub's counters as read that day
     total: int
     previous_total: int | None
     files: list[FileDownloads]
@@ -69,25 +77,33 @@ class HttpDownloadsSource:
         return text
 
 
-def summarise(text: str, days: int = 30) -> Downloads | None:
+def summarise(text: str, days: int = 30, until: date | None = None) -> Downloads | None:
     """Downloads per file name in the ``days`` before the newest snapshot, across releases,
-    and in the ``days`` before that when the snapshot goes back far enough.
+    and in the ``days`` before that when the snapshot goes back far enough. App files only
+    (``.apk``, ``.ipa``). With ``until``, snapshots after that day are ignored, so the window
+    ends on the same day as the rest of the page.
 
     The counters are running totals, so a file's downloads in the window are its newest total
     less its total on the day the window starts (zero if it was not out yet).
     """
     totals: dict[tuple[str, str], dict[date, int]] = defaultdict(dict)
+    days_seen: set[date] = set()
     for row in csv.DictReader(io.StringIO(text)):
         try:
             day = date.fromisoformat(row["date"])
             count = int(row["downloads"])
         except (KeyError, TypeError, ValueError):
             continue
-        totals[(row.get("release") or "", row.get("file") or "")][day] = count
-    if not totals:
+        if until is not None and day > until:
+            continue
+        days_seen.add(day)  # any file dates the snapshot, app file or not
+        name = row.get("file") or ""
+        if is_app_file(name):
+            totals[(row.get("release") or "", name)][day] = count
+    if not days_seen:
         return None
-    as_of = max(day for series in totals.values() for day in series)
-    first = min(day for series in totals.values() for day in series)
+    as_of = max(days_seen)
+    first = min(days_seen)
     start = as_of - timedelta(days=days)
     earlier = start - timedelta(days=days)
     covers_previous = first <= earlier

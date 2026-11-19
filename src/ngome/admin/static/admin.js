@@ -170,3 +170,12 @@ document.querySelectorAll("form[data-sign-out]").forEach((form) => {
     window.location.assign("/admin/sign-in");
   });
 });
+
+// The sticky page bar's height, so a list's sticky table head sits just under it. Without
+// this the CSS keeps a fixed fallback. CSSOM, not a style attribute, so the CSP allows it.
+const bar = document.querySelector(".pagebar");
+if (bar && "ResizeObserver" in window) {
+  new ResizeObserver(() => {
+    document.documentElement.style.setProperty("--bar-h", `${bar.offsetHeight}px`);
+  }).observe(bar);
+}

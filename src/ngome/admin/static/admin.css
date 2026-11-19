@@ -16,7 +16,7 @@
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 Inter, system-ui, sans-serif; overflow-x: hidden; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 Inter, system-ui, sans-serif; overflow-x: clip; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
@@ -378,3 +378,77 @@ details.cant summary { cursor: pointer; color: var(--accent); }
 .card-foot form { display: inline; margin: 0; }
 .ok-text { color: var(--ok); }
 .signin .err.left { text-align: left; }
+
+/* Layout fixes (mockup). */
+/* The sidebar holds still: full height, the nav scrolls inside it if the window is short,
+   and the footer with Sign out is always on screen. overflow-x: clip on body (not hidden)
+   so no ancestor becomes a scroll container under the sticky parts. */
+.side { position: sticky; top: 0; align-self: start; height: 100vh; height: 100dvh; overflow: hidden; padding-bottom: 16px; }
+.side-nav { display: grid; gap: 4px; align-content: start; min-height: 0; overflow-y: auto; }
+.side .foot { flex: none; }
+/* Wide screens: the content grows to 1600px and is centred in the space beside the sidebar. */
+main { max-width: 1600px; margin: 0 auto; }
+/* The page title and filters stay at the top while the page scrolls. */
+:root { --bar-h: 136px; }
+.pagebar { position: sticky; top: 0; z-index: 3; background: var(--bg); margin: -28px -32px 16px; padding: 22px 32px 0; border-bottom: 1px solid var(--border); }
+.pagebar .head { margin-bottom: 10px; }
+.pagebar .filters { margin-bottom: 12px; }
+.pagebar h1 { font-size: 24px; }
+/* Cards in a row share a height; what is inside fills it. */
+.card { display: flex; flex-direction: column; }
+.card > .empty { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+.seeall { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); font-size: 13px; font-weight: 500; }
+.card > table + .seeall { margin-top: auto; }
+.card > table { margin-bottom: 12px; }
+/* A figure not there yet: a neutral card and a plain sentence, never the red lead. */
+.kpi.pending { background: var(--surface); border-style: dashed; }
+.kpi.pending .wait { margin: 10px 0 0; color: var(--muted); font-size: 13.5px; max-width: 30ch; }
+/* The overview grid: 6 columns, 12 on wide screens. */
+.ov { display: grid; gap: 12px; grid-template-columns: repeat(6, minmax(0, 1fr)); grid-auto-flow: dense; }
+.ov > * { min-width: 0; }
+.ov > div { display: grid; }
+.ov > div > .card { margin: 0; }
+.ov .c-trend, .ov .c-daily { grid-column: span 4; }
+.ov .c-build { grid-column: span 2; }
+.ov .c-list { grid-column: span 3; }
+.ov .c-fl { grid-column: span 3; }
+.ov .c-how { grid-column: 1 / -1; }
+.ov > section.c-list:has(#versions-h) { grid-column: span 2; }
+@media (min-width: 1500px) {
+  .ov { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  .ov .c-trend, .ov .c-daily { grid-column: span 6; } .ov .c-build { grid-column: span 3; }
+  .ov > section.c-list:has(#versions-h), .ov .c-list { grid-column: span 3; }
+  .ov .c-fl { grid-column: span 3; } .ov .c-how { grid-column: span 6; }
+  .ov .c-how .how ul { columns: 3; column-gap: 24px; }
+  .ov .hide-4 { display: none; }
+  .ov.ov-empty .c-trend { grid-column: span 8; } .ov.ov-empty .c-build { grid-column: span 4; }
+  .ov.ov-empty .c-list { grid-column: span 6; } .ov.ov-empty .c-how { grid-column: 1 / -1; }
+}
+.ov .how { height: 100%; }
+/* Full list pages: the table head stays under the page bar. */
+table.sticky-head thead th { position: sticky; top: var(--bar-h); z-index: 2; background: var(--surface); padding-top: 10px; }
+th a { color: var(--muted); } th a.on { color: var(--text); font-weight: 600; } th a:hover { color: var(--text); text-decoration: none; }
+.dtable .barcell { width: 32%; }
+tr.zero td { color: var(--faint); }
+.search { display: inline-flex; gap: 6px; align-items: center; }
+.input.sm { min-height: 34px; padding: 5px 12px; font-size: 13px; border-radius: 999px; width: 220px; background: var(--surface); }
+.btn.sm.ghost { min-height: 34px; }
+.pick.toggle::after { display: none; }
+.pick.toggle .box { width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid var(--muted); display: inline-grid; place-items: center; }
+.pick.toggle.on .box { background: var(--brand); border-color: var(--brand); }
+.pick.toggle.on .box::after { content: ""; width: 6px; height: 3px; border-left: 1.5px solid #fff; border-bottom: 1.5px solid #fff; transform: rotate(-45deg) translate(1px, -1px); }
+.rlist { display: none; list-style: none; margin: 0; padding: 0; }
+@media (max-width: 760px) {
+  .pagebar { position: static; margin: 0 0 12px; padding: 0; border: 0; background: none; }
+  .ov { grid-template-columns: minmax(0, 1fr); }
+  .ov > * { grid-column: 1 / -1 !important; }
+  .dtable { display: none; } .rlist { display: block; }
+  .rlist li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .rlist li:last-child { border-bottom: 0; }
+  .rlist .nm { overflow-wrap: anywhere; }
+  .rlist .num { font-family: "Space Grotesk"; font-weight: 600; font-size: 17px; font-variant-numeric: tabular-nums; }
+  .rlist .track, .rlist .meta { grid-column: 1 / -1; }
+  .rlist .meta { color: var(--muted); font-size: 12.5px; }
+  .rlist li.zero .num { color: var(--faint); }
+  .search { width: 100%; } .input.sm { width: auto; flex: 1; min-height: 40px; } .btn.sm.ghost { min-height: 40px; }
+}

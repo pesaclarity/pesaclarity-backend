@@ -2,7 +2,9 @@
 
 {% macro cell(s) %}{% if s is none %}{% elif s.n is none and s.why == "secondary" %}<span class="hidden-cell" title="Hidden so a cell under 10 cannot be worked out from the total">hidden</span>{% elif s.n is none %}<span class="lt10">&lt;10</span>{% else %}{{ "{:,}".format(s.n) }}{% endif %}{% endmacro %}
 
-{% macro kpi(t) %}<div class="card kpi{% if t.lead %} lead{% endif %}{% if t.wordy %} wordy{% endif %}"><div class="label">{{ t.label }}</div><div class="fig">{{ t.value }}</div><div class="note">{% if t.delta %}<span class="delta">{{ t.delta }}</span>{% endif %}{{ t.note }}</div></div>{% endmacro %}
+{% macro kpi(t) %}{% if t.pending %}<div class="card kpi pending"><div class="label">{{ t.label }}</div><p class="wait">{{ t.note }}</p></div>{% else %}<div class="card kpi{% if t.lead %} lead{% endif %}{% if t.wordy %} wordy{% endif %}"><div class="label">{{ t.label }}</div><div class="fig">{{ t.value }}</div><div class="note">{% if t.delta %}<span class="delta">{{ t.delta }}</span>{% endif %}{{ t.note }}</div></div>{% endif %}{% endmacro %}
+
+{% macro see_all(href, n, shown, what) %}{% if n > shown %}<div class="seeall"><a href="{{ href }}">See all {{ what }} ({{ n }}) ›</a></div>{% endif %}{% endmacro %}
 
 {% macro bar_rows(rows, share=True) %}{% for row in rows %}<tr><td{% if row.mono %} class="mono"{% endif %}>{{ row.label }}</td><td class="barcell"><div class="track{% if row.n is none %} hid{% endif %}"><i class="w{{ row.width }}{% if row.lead %} s1{% endif %}"></i></div></td><td class="n">{{ cell(row.shown) }}</td>{% if share %}<td class="n muted hide-s">{{ row.share }}</td>{% endif %}</tr>{% endfor %}{% endmacro %}
 
