@@ -1,0 +1,18 @@
+{% extends "_auth.html" %}{% set title = "Confirm it’s you" %}{% block card %}
+<div class="big-ic">{{ icon("security") }}</div>
+<h1>Confirm it’s you</h1>
+<p class="muted lead-text">{% if strong %}Changing sign-in settings{% else %}Downloading <b>{{ what }}</b>{% endif %} needs a fresh second check. It lasts {{ minutes }} minutes, then the dashboard asks again.</p>
+{% if error %}{{ alert(error) }}{% endif %}
+{% if email_sent %}<form method="post" action="/admin/confirm/email">
+<input type="hidden" name="next" value="{{ next }}">
+{{ code_field("Code from the email", hidden_label=False) }}
+<button class="btn" type="submit">Verify</button></form>
+{% else %}<form method="post" action="/admin/confirm">
+<input type="hidden" name="next" value="{{ next }}">
+{{ code_field("Code from your authenticator app", hidden_label=False) }}
+<button class="btn" type="submit">Verify</button></form>{% endif %}
+{% if has_passkeys %}<button class="btn ghost" type="button" data-action="passkey" data-options="/admin/confirm/passkey/options" data-verify="/admin/confirm/passkey/verify" data-next="{{ next }}">{{ icon("passkey") }} Use a passkey instead</button>{% endif %}
+<p class="err left" id="error" role="alert"></p>
+<div class="linkrow">{% if not strong and not email_sent %}<form method="post" action="/admin/confirm/email/send"><input type="hidden" name="next" value="{{ next }}"><button class="linkbtn" type="submit">Email me a code</button></form>{% elif email_sent %}<a href="/admin/confirm?next={{ next | urlencode }}">Use the authenticator</a>{% else %}<span></span>{% endif %}<a href="{{ cancel }}">Cancel</a></div>
+{{ note("info", "Sign-in changes (password, factors, recovery codes) take the authenticator or a passkey, not an emailed code.") }}
+{% endblock %}

@@ -67,6 +67,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await blob_store.aclose()
         await engine.dispose()
 
+    if settings.admin_origin is not None and not settings.admin_sign_in_ready:
+        # Fail safe: the server runs, and the dashboard refuses sign-in with this message.
+        log.warning(
+            "admin.sign_in_not_configured",
+            missing=[
+                n for n in ("admin_email", "admin_secret_key") if getattr(settings, n) is None
+            ],
+        )
+
     app = FastAPI(
         title="Pesa Clarity server (ngome)",
         version=__version__,

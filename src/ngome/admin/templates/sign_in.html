@@ -1,9 +1,21 @@
-{% from "_ui.html" import icon %}{% set title = "Sign in" %}{% include "_head.html" %}<body><main class="signin"><div>
-<div class="card"><div class="brand">{% include "_logo.html" %} Pesa Clarity <small>admin</small></div>
-<h1>Sign in</h1><p class="muted lead-text">Use the passkey on your phone or security key. Only the owner’s passkeys can open this dashboard.</p>
-<button class="btn" type="button" data-action="sign-in"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-3 3 2 2m-5 1 2 2"/></svg> Sign in with a passkey</button>
-<p class="err" id="error" role="alert"></p>
-<ul class="facts"><li>{{ icon("tick") }}<span>No password, email code or Google sign-in.</span></li>
-<li>{{ icon("tick") }}<span>A cookie is set only after you sign in. It lasts 12 hours.</span></li>
-<li>{{ icon("tick") }}<span>Lost every passkey? Enrol a new one from a terminal with the server’s admin token.</span></li></ul></div>
-<p class="muted under">Counts and crash reports only. Nothing here names a person.</p></div></main></body></html>
+{% extends "_auth.html" %}{% set title = "First sign-in" if first else "Sign in" %}{% block card %}
+{% if not_ready %}<h1>Sign-in isn’t configured</h1>
+<p class="muted lead-text">The server needs <b>NGOME_ADMIN_EMAIL</b> and <b>NGOME_ADMIN_SECRET_KEY</b> before anyone can sign in. Set them in GitHub’s production environment and run Sync settings (docs/deploying.md, “The dashboard”).</p>
+<ul class="facts"><li>{{ icon("tick") }}<span>Nothing else on the server is affected, and enrolled passkeys are kept.</span></li></ul>
+{% elif not set_up %}<h1>Not set up yet</h1>
+<p class="muted lead-text">Make the admin user from a terminal with the server’s admin token. The README’s “Admin dashboard” section has the command.</p>
+{% else %}{% if first %}{{ first_steps(1) }}<h1>First sign-in</h1>
+<p class="muted lead-text">Use the username and temporary password that the set-up command printed in your terminal.</p>
+{% else %}{{ later_steps(1) }}<h1>Sign in</h1>
+<p class="muted lead-text">Your username and password, then the code from your authenticator app.</p>{% endif %}
+{% if error %}{{ alert(error) }}{% endif %}
+<form method="post" action="/admin/sign-in">
+<div class="field"><label for="u">Username</label><input class="input{% if error %} bad{% endif %}" id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="64"{% if not error %} autofocus{% endif %}></div>
+{{ pw_field("p", "Temporary password" if first else "Password", "password", "current-password", "Works once, within 24 hours of the set-up command." if first else "", bad=error) }}
+<button class="btn" type="submit">Continue</button>
+</form>
+<ul class="facts">{% if first %}<li>{{ icon("tick") }}<span>Next you’ll confirm your email, choose your own password and set up an authenticator app. The dashboard opens after that.</span></li>
+<li>{{ icon("tick") }}<span>Expired or lost? Run the set-up command again; the old one stops working.</span></li>{% else %}<li>{{ icon("tick") }}<span>Both steps are needed every time.</span></li>
+<li>{{ icon("tick") }}<span>After too many wrong tries, sign-in pauses for a while.</span></li>
+<li>{{ icon("tick") }}<span>Forgot the password? Reset it from a terminal with the server’s admin token.</span></li>{% endif %}</ul>{% endif %}
+{% endblock %}{% block under %}<p class="muted under">{% if not_ready %}Counts and crash reports only. Nothing here names a person.{% elif error %}The same message for a wrong username, a wrong password, or both.{% elif first %}The temporary password is never emailed and never stored in plain text.{% else %}Counts and crash reports only. Nothing here names a person.{% endif %}</p>{% endblock %}

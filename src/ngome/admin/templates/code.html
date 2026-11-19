@@ -1,0 +1,19 @@
+{% extends "_auth.html" %}{% block card %}
+{% if first %}{{ first_steps(2) }}{% else %}{{ later_steps(2) }}{% endif %}
+{% if kind == "totp" %}<h1>Authenticator code</h1>
+<p class="muted lead-text">Password accepted. Type the code your app shows for <b>Pesa Clarity admin</b>.</p>
+{% elif kind == "email" %}<h1>{{ "Confirm your email" if first else "Check your email" }}</h1>
+<p class="muted lead-text">{% if first %}So a leaked admin token alone can’t open the dashboard, we sent a 6-digit code to <b>{{ masked }}</b>, the owner’s address on the server.{% else %}We sent a 6-digit code to <b>{{ masked }}</b>. It works for 5 minutes.{% endif %}</p>
+{% else %}<h1>Use a recovery code</h1>
+<p class="muted lead-text">One of the ten codes you saved at set-up. Each one works once.</p>{% endif %}
+{% if error %}{{ alert(error) }}{% endif %}
+<form method="post" action="{{ action }}">
+{% if kind == "recovery" %}<div class="field"><label for="r" class="sr">Recovery code</label><input class="input code recovery" id="r" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="13" required autofocus></div>
+{% else %}{{ code_field("6-digit code") }}{% endif %}
+<button class="btn" type="submit">Verify</button>
+</form>
+{% if kind == "email" %}<form method="post" action="{{ resend }}"><button class="btn ghost{% if wait %} off{% endif %}" type="submit"{% if wait %} disabled data-wait="{{ wait }}"{% endif %}>{% if wait %}Send a new code in {{ wait // 60 }}:{{ "%02d" % (wait % 60) }}{% else %}Send a new code{% endif %}</button></form>
+{{ note("lock", "We never email a sign-in link. Type this code only on " ~ host ~ "." ~ ("" if first else " Signed in this way, you can read and download, but not change sign-in settings.")) }}{% endif %}
+{% if not first %}<div class="linkrow"><a href="/admin/sign-in/another">Use another way</a>{% if kind == "totp" %}<span class="muted">Each code works once</span>{% endif %}</div>{% endif %}
+{% if kind == "totp" %}{{ note("info", "This step lasts 5 minutes. After that, start again from the password.") }}{% elif kind == "recovery" %}{{ note("info", "Using a code emails you a notice. Afterwards, open Security to replace the lost authenticator and make new codes.") }}{% endif %}
+{% endblock %}

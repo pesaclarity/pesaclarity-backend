@@ -1,0 +1,11 @@
+{% extends "_auth.html" %}{% set title = "Another way" %}{% block card %}
+{{ later_steps(2) }}<h1>Use another way</h1>
+<p class="muted lead-text">Password accepted. Choose another second check.</p>
+<p class="err left" id="error" role="alert">{{ error or "" }}</p>
+<ul class="factors">
+{% if has_passkeys %}<li><button class="first" type="button" data-action="passkey" data-options="/admin/sign-in/passkey/options" data-verify="/admin/sign-in/passkey/verify"><span class="ic">{{ icon("passkey") }}</span><span><b>Passkey <span class="tag ok">Strongest</span></b><span class="d">Phone screen lock or security key</span></span><span class="chev">›</span></button></li>{% endif %}
+<li><a href="/admin/sign-in/code"><span class="ic">{{ icon("app") }}</span><span><b>Authenticator app</b><span class="d">The 6-digit code in your app</span></span><span class="chev">›</span></a></li>
+<li><form method="post" action="/admin/sign-in/email/send"><button type="submit"><span class="ic">{{ icon("mail") }}</span><span><b>Email a code <span class="tag">Fallback</span></b><span class="d">To {{ masked }}</span></span><span class="chev">›</span></button></form></li>
+</ul>
+<div class="linkrow"><a href="/admin/sign-in/recovery">Use a recovery code</a><a href="/admin/sign-in">Start again</a></div>
+{% endblock %}
