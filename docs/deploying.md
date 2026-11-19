@@ -259,6 +259,7 @@ After the first sync, Secret Manager holds the contact pepper as version 1. Keep
 | `NGOME_VAULT_BLOB_STORE` | `postgres` until [R2](#adding-r2) |
 | `NGOME_PRIVACY_POLICY_SHA256` | The SHA-256 of each approved privacy policy, as a JSON list: `["<digest>"]`, where the digest is `sha256sum assets/policy/privacy_policy.md` in pesaclarity-app. Add each new version's digest when the app ships it, and keep older ones while older app versions are in use. Unset keeps the policy email off |
 | `FORWARDED_ALLOW_IPS` | `*` |
+| `NGOME_PROXY_HOPS` | `1` (the default). Where the caller's address sits in `X-Forwarded-For`, counted from the right: Cloud Run appends it last, and anything to its left is written by the caller. Set `2` only behind a Google load balancer |
 
 Anything not listed keeps its default from `src/ngome/core/config.py`.
 

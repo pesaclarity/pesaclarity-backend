@@ -24,6 +24,7 @@ from ngome.appstatus import service
 from ngome.appstatus.schemas import Build, NoticeCreate, NoticeOut, Platform
 from ngome.appstatus.signing import AppStatusSigner
 from ngome.appstatus.versions import MAX_VERSION_LENGTH, VERSION_PATTERN
+from ngome.core.client import client_address
 from ngome.core.logging import get_logger
 from ngome.core.security import constant_time_equals, utcnow
 from ngome.counting import service as counting
@@ -89,7 +90,7 @@ async def _count(
         lookup = cast(CountryLookup | None, request.app.state.country_lookup)
         country = None
         if lookup is not None:
-            country = lookup.country(request.client.host if request.client else None)
+            country = lookup.country(client_address(request, settings.proxy_hops))
         await counting.record_check_in(
             session,
             settings,
