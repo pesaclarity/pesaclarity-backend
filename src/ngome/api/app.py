@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from ngome import __version__
 from ngome.admin import router as admin_router
 from ngome.admin.downloads import HttpDownloadsSource
+from ngome.admin.web import ICON_CACHE, ICON_PATHS
 from ngome.api.routes import account, health
 from ngome.appstatus import router as app_status_router
 from ngome.appstatus.signing import AppStatusSigner
@@ -111,6 +112,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = await call_next(request)
         if request.url.path == "/admin" or request.url.path.startswith("/admin/"):
             response.headers.update(ADMIN_HEADERS)
+        if request.url.path in ICON_PATHS and response.status_code == 200:
+            response.headers["Cache-Control"] = ICON_CACHE
         log.info(
             "http.request",
             method=request.method,
