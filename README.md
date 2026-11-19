@@ -1,6 +1,6 @@
 # pesaclarity-backend
 
-The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free app for Android and iPhone that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has three narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, and combine clipped, noised federated model updates under secure aggregation.
+The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free app for Android and iPhone that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has a few narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, combine clipped, noised federated model updates under secure aggregation, answer the app's signed update check, and count installs and take crash reports without identifiers ([ADR 0024](https://github.com/pesaclarity/docs/blob/main/decisions/0024-counting-installs-and-crash-reports.md)).
 
 **Codename:** ngome, Swahili for "fortress".
 
@@ -15,7 +15,10 @@ The product spec and brand live in [pesaclarity/docs](https://github.com/pesacla
 | Auth | Account id, a keyed hash of the sign-in contact, devices, sign-up, sign-in and sign-out events | The email address or Google id in readable form, any financial data |
 | Backup vault | Ciphertext (AES-256-GCM, keyed on the phone with Argon2id) in object storage under a random key; its size, SHA-256 and upload time in Postgres | Keys, passphrases or anything readable; account ids in object keys |
 | Federated learning | Aggregated model updates | Raw data or individual updates in the clear |
-| App status | The notices the team sends (updates, news) | Anything about who asked: no address, version or account |
+| App status | The notices the team sends (updates, news), and how many check-ins got each one per day | Anything about who asked: no address, account or device id |
+| Install counts | Per open day and month, a random key and keyed digests of the phones' random monthly counting tokens, deleted when the period closes; totals by version, build and (months only, when country lookup is on) country | The token itself, the address, or any link between a total and a phone |
+| Crash reports | Reports people chose to send: app version and build, system version, chip, the kind of error and the stack as code offsets, with the day received (90 days); groups of them with counts and dates (a year after last seen) | Messages, amounts, names, numbers, file paths, the time, the address, any account or install id |
+| Admin dashboard | The owner's passkeys (credential id, public key, counter, label) and 12-hour sessions, stored as digests | Passwords, emails, or a Google account |
 
 Accounts are optional: the app works fully without one, and only the vault needs sign-in.
 
@@ -51,6 +54,9 @@ To run everything in containers instead: `docker compose up --build`.
 | `GET /v1/vault/backups`, `GET` / `DELETE /v1/vault/backups/{id}` | List, download and delete backups |
 | `GET /v1/app-status?version=&build=&platform=` | The newest app version and active notices for that build, signed with Ed25519. No account; nothing about the caller is logged or stored |
 | `POST` / `GET /v1/admin/app-notices`, `POST /v1/admin/app-notices/{id}/disable` | Create, list and stop notices (admin token) |
+| `POST /v1/crash-reports` | A crash report the person chose to send: exactly the schema below, 16 KB at most. No account, no cookie |
+| `POST /v1/admin/passkey-enrolments`, `GET /v1/admin/passkeys`, `DELETE /v1/admin/passkeys/{id}` | Mint a single-use link that adds a dashboard passkey; list and remove passkeys (admin token) |
+| `GET /admin` (and `/admin/installs`, `/admin/crashes`) | The owner's read-only dashboard, opened with a passkey (off until `NGOME_ADMIN_ORIGIN` is set) |
 
 Access tokens last 10 minutes; refresh tokens rotate on every use and expire after 30 days. The vault keeps the newest 10 backups per account, up to 256 MiB in total.
 
@@ -58,7 +64,7 @@ Google sign-in is off by default. To turn it on, set `NGOME_GOOGLE_SIGN_IN_ENABL
 
 ### Retention
 
-`ngome-purge` deletes one-time codes 24 hours after they expire and sign-in events after 90 days, then retries any backup objects still queued for deletion. The periods are `NGOME_RETENTION_OTP_CHALLENGE_HOURS` and `NGOME_RETENTION_AUTH_EVENT_DAYS`; the defaults are provisional until the privacy policy fixes them, and the two must always agree. The job is safe to run more than once or concurrently, and exits non-zero if the purge fails or a queued object could not be deleted (it stays queued for the next run).
+`ngome-purge` deletes one-time codes 24 hours after they expire and sign-in events after 90 days, then retries any backup objects still queued for deletion. It also deletes counting digests and keys when their period closes (a day's once the next day is over; a month's on the 2nd of the next month), daily install totals, notice reach and flood marks after 13 months (`NGOME_RETENTION_DAILY_COUNT_DAYS`), crash reports after 90 days (`NGOME_RETENTION_CRASH_REPORT_DAYS`), crash groups a year after they were last seen (`NGOME_RETENTION_CRASH_GROUP_DAYS`), and expired dashboard sessions, enrolment links and challenges. Monthly install totals are kept; they name no one. The periods are `NGOME_RETENTION_OTP_CHALLENGE_HOURS` and `NGOME_RETENTION_AUTH_EVENT_DAYS`; the defaults are provisional until the privacy policy fixes them, and the two must always agree. The job is safe to run more than once or concurrently, and exits non-zero if the purge fails or a queued object could not be deleted (it stays queued for the next run).
 
 Run it once a day with the same environment as the API. On Cloud Run it is a job that Cloud Scheduler starts daily ([docs/deploying.md](docs/deploying.md)); elsewhere, pick whichever scheduler you already use.
 
@@ -122,7 +128,7 @@ spec:
 
 ### App status and notices
 
-The app asks `GET /v1/app-status?version=0.3.0&build=play&platform=android` when it opens, at most once a day, without an account. `build` is `play`, `foss`, `ios` or `website`; `platform` is `android` or `ios`. The server logs only the route and status, never the caller's address or the query, and stores nothing about the request. Responses may be cached (`NGOME_APP_STATUS_CACHE_SECONDS`, default 300).
+The app asks `GET /v1/app-status?version=0.3.0&build=play&platform=android` when it opens, at most once a day, without an account. `build` is `play`, `foss`, `ios` or `website`; `platform` is `android` or `ios`. The server logs only the route and status, never the caller's address, the query or the headers. It adds one to each notice's reach for the day, and counts the phone's `Count-Token` header if there is one ([Counting installs](#counting-installs)); nothing else about the request is stored. Responses may be cached (`NGOME_APP_STATUS_CACHE_SECONDS`, default 300).
 
 The body is `{"alg": "Ed25519", "payload": <base64>, "signature": <base64>}`. The signature covers the bytes `pesaclarity.app-status.v1\n` followed by the decoded payload, which is JSON:
 
@@ -158,6 +164,50 @@ curl -X POST "$API/v1/admin/app-notices" -H "Authorization: Bearer $NGOME_ADMIN_
 `GET /v1/admin/app-notices` lists them all; `POST /v1/admin/app-notices/{id}/disable` stops one.
 
 **Signing key.** `uv run ngome-app-status-key` prints a new seed and its public key. Set the seed as the secret `NGOME_APP_STATUS_SIGNING_SEED` (base64 of 32 bytes; unset turns app status off) and add the public key to the app's pinned list in a release before the server signs with it. Never commit a seed; the tests make throwaway keys.
+
+### Counting installs
+
+[ADR 0024](https://github.com/pesaclarity/docs/blob/main/decisions/0024-counting-installs-and-crash-reports.md) counts active installs without identifiers. The app makes a counting token from 128 random bits, new each calendar month (UTC) and never derived from the phone or the person, and sends it only on the app status check-in, in a `Count-Token` header (22 base64url characters), so request logs, which record the URL, never hold it. The person can switch it off in the app; the check-in carries on without it.
+
+`ngome.counting` keeps, per open day and per month, one random 32-byte key (`count_keys`) and, for each token seen, the first 16 bytes of HMAC-SHA-256 of the token under that key (`count_seen`). When a digest is new in its period, it adds one to that period's totals (`count_totals`) for `all`, the build, the version and, for months only, the country. So each period counts a token once, under the version it had when first seen; the day and month keys differ, so a day's digest cannot be matched to the month's. `ngome-purge` deletes the sets and keys when the period closes, after which nothing links a total to a phone.
+
+- **Country** is off (`NGOME_COUNTRY_LOOKUP_ENABLED=false`) until the owner has confirmed on db-ip.com that DB-IP IP to Country Lite is licensed under CC BY 4.0. When on, the caller's address (Cloud Run's `X-Forwarded-For`, through Uvicorn's `--proxy-headers`) is looked up in the MMDB file at `NGOME_COUNTRY_DB_PATH`, held in memory, and dropped; only the two-letter code is used, for the month's totals, and an address the database does not place counts as Unknown. The dashboard and the policy credit "IP Geolocation by DB-IP" with a link to db-ip.com. To ship the file in the image, build with `--build-arg DBIP_COUNTRY_LITE_MONTH=2026-11` (the month's file name on db-ip.com); refresh it monthly.
+- **Small numbers** are hidden on display, never in storage: the dashboard shows a count under 10 as "<10", and when only one cell in a table is hidden it hides the next smallest too, so the total cannot give it away. Country is shown by month only, one dimension at a time.
+- **Abuse.** Anyone can make up tokens. A malformed token is ignored and the check-in still answered. Each instance counts at most `NGOME_COUNTING_MAX_NEW_PER_HOUR` (600) new tokens an hour; above that, tokens are not counted and the hour is marked as a flood on the dashboard (`count_floods`). A day or month counts at most `NGOME_COUNTING_MAX_PER_PERIOD` tokens. Nothing is limited per address, since that would mean keeping the address. The counts drive nothing automatically.
+- `NGOME_COUNTING_ENABLED=false` ignores the header altogether.
+
+### Crash reports
+
+`POST /v1/crash-reports` takes a report the person chose to send after seeing it. It needs no account, sets no cookie and is not linked to the counting token. The body must be exactly this, 16 KB at most, or it is refused with `422` (and the refusal does not echo it):
+
+```json
+{"format": 1, "app": "0.5.2", "build_number": 412, "build": "play", "os": "Android 13",
+ "cpu": "arm64", "error": "TypeError", "build_id": "b6f1c4e09a2d7f35",
+ "stack": ["#00 pc 0x2f4b3c", "#01 pc 0x2f49e0"]}
+```
+
+`error` is one of `TypeError`, `StateError`, `RangeError`, `ArgumentError`, `FormatException`, `SqliteException`, `TimeoutException`, `FileSystemException`, `PlatformException` or `Other`, never a message. `os` is `Android <version>` or `iOS <version>`; `cpu` is `arm64`, `arm`, `x64`, `ia32` or `riscv64`. `stack` holds up to 64 frames, each either an offset in the app's instructions (`#00 pc 0x2f4b3c`, from an obfuscated release) or, from an unobfuscated build, a dotted function name and a `package:` or `dart:` location; any other line is refused. Every field is checked with its own pattern (`ngome.crashes.schemas`), and the tests plant amounts, phone numbers, emails, names, message text and file paths to check none gets through.
+
+The server keeps the day it received a report, not the time. Reports with the same error, build id and first three frames share a group (`crash_groups`), which keeps its daily counts (`crash_group_days`) after its reports are deleted. At most `NGOME_CRASH_REPORTS_MAX_PER_DAY` (2,000) reports are taken a day; then `429`. `NGOME_CRASH_REPORTS_ENABLED=false` turns the route off.
+
+Decoding offsets into our code's names needs each release's `--split-debug-info` symbols and the decode job that ADR 0024 plans (symbols in Cloudflare R2, the job on Cloud Run); neither is built yet, so the dashboard shows reports as not decoded and groups an obfuscated build's reports per build id. `crash_groups.decoded_function` and `decoded_location`, and `crash_reports.decoded`, are where the job will write.
+
+### Admin dashboard
+
+The owner's read-only dashboard is served under `/admin`: monthly and daily active installs, versions and builds, notice reach, GitHub release downloads (read from `stats/downloads.csv` on the `stats` branch of pesaclarity/.github, public, `NGOME_DOWNLOADS_CSV_URL`), installs by country, the flood check, and crash groups with one report exactly as received. Pages are rendered on the server with charts as inline SVG; the only script is the passkey ceremony, and the fonts are served from the dashboard itself, so it makes no third-party requests. Every `/admin` response carries `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Notices are still sent with the admin token.
+
+It is off (every route `404`) until `NGOME_ADMIN_ORIGIN` is set to the dashboard's exact origin, such as `https://ngome-xxxx.a.run.app`; the passkeys are bound to its host name, so changing it later means enrolling again.
+
+**Sign-in is by passkey only** (WebAuthn, with py_webauthn), with user verification, against an allow-list (`admin_passkeys`): no password, no email code, no Google. A successful sign-in sets a random session id in a `__Host-ngome_admin` cookie (`Secure`, `HttpOnly`, `SameSite=Strict`) for 12 hours (`NGOME_ADMIN_SESSION_HOURS`); the server keeps only its digest, and sign-out deletes it. Every POST also checks `Origin`.
+
+**Enrolling a passkey.** From a terminal, with the admin token (it never reaches a browser):
+
+```sh
+curl -X POST "$API/v1/admin/passkey-enrolments" -H "Authorization: Bearer $NGOME_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"label": "Phone"}'
+```
+
+It returns a single-use link, valid for 10 minutes (`NGOME_ADMIN_ENROLMENT_MINUTES`). Open it in the browser that holds the passkey, or on the phone whose screen lock will be it, and choose **Add a passkey**. Register two (say a phone and a security key), so one can be lost. `GET /v1/admin/passkeys` lists them and `DELETE /v1/admin/passkeys/{id}` removes one and ends its sessions. Lost every passkey? Enrol again the same way.
 
 ### Backup storage
 
@@ -211,6 +261,10 @@ src/ngome/
   api/      app factory, shared dependencies, health and account routes
   auth/     email and Google sign-in, tokens, devices, email (SMTP) and Google providers
   vault/    encrypted backup metadata, blob stores (Postgres, filesystem, S3-compatible) and deletion queue
+  appstatus/ signed app status and admin notices
+  counting/ install counts from the monthly counting token, country lookup, suppression
+  crashes/  crash report schema, intake and grouping
+  admin/    the passkey dashboard: ceremonies, sessions, pages, templates and static files
   fl/       Flower aggregation server and its settings
   core/     settings, logging with redaction, token and hashing primitives
   db/       SQLAlchemy base, engine and model registry
@@ -237,7 +291,7 @@ Without them those steps are skipped with a notice. The migration steps use a sc
 
 ## Not done yet
 
-Named `TODO` markers in the code cover loading and publishing the federated model. Play Integrity checks on federated updates come with the Flower deployment.
+Named `TODO` markers in the code cover loading and publishing the federated model. Play Integrity checks on federated updates come with the Flower deployment. From ADR 0024: uploading release symbols and the crash decode job, and the dashboard's federated-learning card, which fills in once the aggregator stores its rounds.
 
 ## Get involved
 
