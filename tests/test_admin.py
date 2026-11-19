@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ngome.admin.downloads import summarise
-from ngome.admin.views import installs_for
+from ngome.admin.views import installs_for, short_day
 from ngome.core.config import Settings
 from ngome.counting.models import DAY, MONTH, CountTotal
 from ngome.counting.suppress import Shown, derived, pair, shown_total, suppress, suppress_marked
@@ -155,14 +155,29 @@ async def test_overview_and_installs_hide_small_counts(
         async def csv_text(self) -> str:
             return (
                 "date,release,file,downloads\n"
-                "2026-10-01,v0.4.0,pesaclarity-play.apk,100\n"
-                "2026-11-17,v0.4.0,pesaclarity-play.apk,160\n"
-                "2026-11-17,v0.5.0,pesaclarity-play.apk,40\n"
-                "2026-11-17,v0.5.0,pesaclarity-foss.apk,12\n"
+                f"{yesterday - timedelta(days=45)},v0.4.0,pesaclarity-play.apk,100\n"
+                f"{yesterday},v0.4.0,pesaclarity-play.apk,160\n"
+                f"{yesterday},v0.5.0,pesaclarity-play.apk,40\n"
+                f"{yesterday},v0.5.0,pesaclarity-foss.apk,12\n"
+                f"{yesterday},screenshots,phone-1.png,900\n"
+                f"{yesterday},screenshots-main,manifest.json,500\n"
+                # Today's snapshot is newer than the page's day, so it is left out.
+                f"{today},v0.5.0,pesaclarity-foss.apk,5000\n"
             )
 
     app.state.downloads_source = Csv()
     page = (await client.get("/admin")).text
+    # Only app files count: 60 + 40 + 12, never the screenshots or their manifest.
+    assert ">112<" in page
+    assert "phone-1.png" not in page
+    assert "manifest.json" not in page
+    # One date for the page: counts close at the end of yesterday (UTC), and downloads are
+    # cut to the same day, so neither the header nor the downloads card names another.
+    assert f"Up to {short_day(yesterday)} (UTC)" in page
+    assert page.lower().count("up to ") == 1
+    assert f" to {short_day(today)}" not in page
+    assert "5,0" not in page
+    assert 'class="card kpi lead"' in page  # the red lead card, now there is a figure
     assert "3,412" in page
     assert "1,122" in page
     assert "2,611" in page
@@ -256,6 +271,119 @@ def test_downloads_summary_counts_the_last_30_days() -> None:
     assert summary.total == 40
     # The snapshot does not go back 60 days, so there is nothing to compare with.
     assert summary.previous_total is None
+
+
+def test_downloads_count_only_app_files() -> None:
+    text = (
+        "date,release,file,downloads\n"
+        "2026-09-01,v0.3.0,pesaclarity-play.apk,10\n"
+        "2026-09-01,screenshots,phone-1.png,5\n"
+        "2026-10-18,v0.3.0,pesaclarity-play.apk,50\n"
+        "2026-10-18,screenshots,phone-1.png,300\n"
+        "2026-11-17,v0.3.0,pesaclarity-play.apk,80\n"
+        "2026-11-17,v0.3.0,PesaClarity.IPA,4\n"
+        "2026-11-17,screenshots,phone-1.png,700\n"
+        "2026-11-17,screenshots-main,manifest.json,90\n"
+    )
+    summary = summarise(text)
+    assert summary is not None
+    assert summary.by_file == [("pesaclarity-play.apk", 30), ("PesaClarity.IPA", 4)]
+    assert summary.total == 34
+    assert summary.previous_total == 40  # the PNG's 295 the month before is not in it
+    # A snapshot of only other files still has a day; it just has no app downloads.
+    only_pictures = summarise("date,release,file,downloads\n2026-11-17,screenshots,a.png,9\n")
+    assert only_pictures is not None
+    assert (only_pictures.as_of.isoformat(), only_pictures.total) == ("2026-11-17", 0)
+    assert only_pictures.files == []
+
+
+async def test_lead_card_is_neutral_until_there_is_a_figure(
+    client: httpx.AsyncClient, signed_in: Owner
+) -> None:
+    page = (await client.get("/admin")).text
+    tiles = page.split('<div class="grid kpis">', 1)[1].split('<div class="grid g21 mt">', 1)[0]
+    # Nothing counted: the lead tile is on the neutral surface with its explanation as text,
+    # and no tile shows a big placeholder word (or a dash) where a figure would go.
+    assert "kpi lead" not in tiles
+    assert tiles.count('class="card kpi pending"') == 3  # installs, daily, crash rate
+    assert "No figure yet. It shows once 10 or more phones have checked in" in tiles
+    assert "Shows from the first day with 10 or more." in tiles
+    assert "Soon" not in tiles
+    assert "Counting has not started" not in tiles
+    assert "\N{EM DASH}" not in tiles
+    assert "\N{EN DASH}" not in tiles
+
+
+async def test_overview_lists_show_five_and_count_the_rest(
+    client: httpx.AsyncClient, signed_in: Owner, maker: async_sessionmaker[AsyncSession]
+) -> None:
+    from tests.test_crash_reports import report  # noqa: PLC0415
+
+    for i in range(7):
+        sent = await client.post("/v1/crash-reports", json=report(build_id=f"b6f1c4e09a2d7f3{i}"))
+        assert sent.status_code == 202
+    month = datetime.now(UTC).date().replace(day=1)
+    versions = {f"0.{i}.0": 100 + i for i in range(8)}
+    await add_totals(maker, MONTH, month, {"all": {"all": 828}, "version": versions})
+    page = (await client.get("/admin")).text
+    crashes = page.split('id="crash-h"', 1)[1].split("</section>", 1)[0]
+    assert crashes.count('<a class="row"') == 5
+    assert "See all crash groups (7)" in crashes
+    assert "See all versions (8)" in page
+
+
+async def test_downloads_page_searches_sorts_and_hides_zeros(
+    client: httpx.AsyncClient, signed_in: Owner, app: FastAPI
+) -> None:
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    start = yesterday - timedelta(days=30)
+    earlier = start - timedelta(days=30)
+
+    class Csv:
+        async def csv_text(self) -> str:
+            rows = [
+                (earlier, "v0.4.0", "pesaclarity-play.apk", 0),
+                (start, "v0.4.0", "pesaclarity-play.apk", 100),
+                (yesterday, "v0.4.0", "pesaclarity-play.apk", 130),
+                (start, "v0.4.0", "pesaclarity-foss.apk", 10),
+                (yesterday, "v0.4.0", "pesaclarity-foss.apk", 90),
+                (yesterday, "v0.5.0", "pesaclarity.ipa", 7),
+                (start, "v0.3.0", "pesaclarity-old.apk", 4),
+                (yesterday, "v0.3.0", "pesaclarity-old.apk", 4),
+                (yesterday, "screenshots", "phone-1.png", 900),
+                (yesterday, "screenshots-main", "manifest.json", 500),
+            ]
+            return "date,release,file,downloads\n" + "".join(
+                f"{d},{r},{f},{n}\n" for d, r, f, n in rows
+            )
+
+    app.state.downloads_source = Csv()
+
+    def files(html: str) -> list[str]:
+        table = html.split('<table class="sticky-head dtable">', 1)[1].split("</table>", 1)[0]
+        return [cell.split("<", 1)[0] for cell in table.split('<td class="mono">')[1:]]
+
+    page = (await client.get("/admin/downloads")).text
+    assert files(page) == ["pesaclarity-foss.apk", "pesaclarity-play.apk", "pesaclarity.ipa"]
+    assert "png" not in page
+    assert "manifest.json" not in page
+    assert "117 downloads in all" in page
+    assert "Show 0s (1)" in page
+
+    by_name = (await client.get("/admin/downloads", params={"sort": "name"})).text
+    assert files(by_name) == ["pesaclarity-foss.apk", "pesaclarity-play.apk", "pesaclarity.ipa"]
+    by_change = (await client.get("/admin/downloads", params={"sort": "change"})).text
+    # Biggest rise first: foss 10 -> 80, the iPhone file 0 -> 7, play 100 -> 30.
+    assert files(by_change) == ["pesaclarity-foss.apk", "pesaclarity.ipa", "pesaclarity-play.apk"]
+
+    found = (await client.get("/admin/downloads", params={"q": "PLAY"})).text
+    assert files(found) == ["pesaclarity-play.apk"]
+    missing = (await client.get("/admin/downloads", params={"q": "<b>x"})).text
+    assert "No app file matches “&lt;b&gt;x”" in missing
+
+    zeros = (await client.get("/admin/downloads", params={"zeros": "1"})).text
+    assert "pesaclarity-old.apk" in files(zeros)
+    assert 'aria-pressed="true"' in zeros
 
 
 def test_downloads_summary_compares_with_the_30_days_before() -> None:

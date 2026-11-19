@@ -43,6 +43,7 @@ from ngome.fl.config import FLSettings
 
 BUILD_ORDER = ("play", "foss", "website", "ios")
 TOP_VERSIONS = 5
+OVERVIEW_ROWS = 5  # rows in each overview table; the rest are a "See all" away
 TREND_MONTHS = 6
 NEW_DAYS = 7
 QUIET_DAYS = 14
@@ -160,6 +161,7 @@ class Tile:
     delta: str = ""
     lead: bool = False
     wordy: bool = False  # a phrase rather than a figure
+    pending: bool = False  # no figure yet: a neutral card with plain text, never the red lead
 
 
 async def _totals(session: AsyncSession, kind: str, period: date, dimension: str) -> dict[str, int]:
@@ -265,7 +267,7 @@ async def crash_rate(session: AsyncSession, filters: Filters, month: date, today
     end = min(today, month_of(month + timedelta(days=32)) - timedelta(days=1))
     reports = await _report_count(session, filters, month, end)
     if installs.n is None:
-        return Tile(label, "Soon", "Shows once this month has 10 or more installs", wordy=True)
+        return Tile(label, "", "Shows once this month has 10 or more installs.", pending=True)
     return Tile(
         label,
         f"{reports / installs.n * 1000:.1f}",
@@ -316,6 +318,9 @@ class Overview:
     month: date
     months: list[date]
     filters: Filters
+    # The page's one "up to" day. Counts close at the end of the previous UTC day, so it is
+    # yesterday; downloads are cut to the same day (``summarise(until=...)``) rather than
+    # showing the newest snapshot, which is usually today's live counters.
     as_of: str
     started: bool
     tiles: list[Tile]
@@ -332,11 +337,15 @@ class Overview:
     versions_note: str
     crash_rows: list[CrashBrief]
     crash_summary: str
+    crash_groups_n: int
     notices: list[NoticeRow]
+    notices_n: int
+    versions_n: int
     downloads: Downloads | None
     downloads_state: str  # "ok", "unread" or "off"
     fl_min_cohort: int
     country_on: bool
+    downloads_late: bool = False  # the newest snapshot ends before the page's "up to" day
 
 
 def _trend(
@@ -518,7 +527,7 @@ def version_bars(totals: dict[str, int], total: int) -> list[Bar]:
 
 async def _crash_brief(
     session: AsyncSession, filters: Filters, today: date
-) -> tuple[list[CrashBrief], str]:
+) -> tuple[list[CrashBrief], str, int]:
     since7 = today - timedelta(days=NEW_DAYS - 1)
     since30 = today - timedelta(days=29)
     counts = await session.execute(
@@ -532,7 +541,7 @@ async def _crash_brief(
     previous = await _report_count(
         session, filters, since7 - timedelta(days=NEW_DAYS), since7 - timedelta(days=1)
     )
-    top = sorted(by_group.items(), key=lambda kv: -kv[1])[:4]
+    top = sorted(by_group.items(), key=lambda kv: -kv[1])[:OVERVIEW_ROWS]
     groups = (
         {
             g.id: g
@@ -572,7 +581,7 @@ async def _crash_brief(
         if total
         else f"No reports in the last 7 days. Previous 7 days: {previous}."
     )
-    return rows, summary
+    return rows, summary, len(by_group)
 
 
 async def _group_days(
@@ -595,13 +604,13 @@ async def _group_days(
     return out
 
 
-async def _notices(session: AsyncSession, limit: int = 10) -> list[NoticeRow]:
+async def _notices(session: AsyncSession) -> list[NoticeRow]:
+    """Every notice that reached a check-in, most reached first."""
     reach_rows = await session.execute(
         select(AppNotice, func.sum(NoticeReach.n), func.min(NoticeReach.day))
         .join(NoticeReach, NoticeReach.notice_id == AppNotice.id)
         .group_by(AppNotice.id)
-        .order_by(func.min(NoticeReach.day).desc())
-        .limit(limit)
+        .order_by(func.sum(NoticeReach.n).desc())
     )
     return [
         NoticeRow(
@@ -651,7 +660,7 @@ async def overview(
 
     trend, trend_rows, legend, trend_note = _trend(cells, span, filters)
     multiples, builds_note = _multiples(cells, span)
-    crash_rows, crash_summary = await _crash_brief(session, filters, today)
+    crash_rows, crash_summary, crash_groups_n = await _crash_brief(session, filters, today)
 
     if started:
         lead = Tile(
@@ -664,14 +673,13 @@ async def overview(
     else:
         lead = Tile(
             "Monthly active installs",
-            "Counting has not started",
-            "The first figure shows once 10 or more phones have checked in this month.",
-            lead=True,
-            wordy=True,
+            "",
+            "No figure yet. It shows once 10 or more phones have checked in this month.",
+            pending=True,
         )
     if daily is None:
         daily_tile = Tile(
-            "Daily, yesterday", "Soon", "Shows from the first day with 10 or more", wordy=True
+            "Daily, yesterday", "", "Shows from the first day with 10 or more.", pending=True
         )
     else:
         average = round(sum(shown_week) / len(shown_week)) if shown_week else None
@@ -685,7 +693,7 @@ async def overview(
         down = Tile(
             "Downloads, 30 days",
             f"{downloads.total:,}",
-            "GitHub release files",
+            "App files (.apk, .ipa) from GitHub releases",
             delta(downloads.total, downloads.previous_total),
         )
     elif downloads_state == "off":
@@ -700,6 +708,7 @@ async def overview(
     tiles = [lead, daily_tile, await crash_rate(session, filters, month, today), down]
 
     version_raw = cells.get(month, {}).get("version", {})
+    all_notices = await _notices(session)
     return Overview(
         month=month,
         months=available,
@@ -722,9 +731,13 @@ async def overview(
         ),
         crash_rows=crash_rows,
         crash_summary=crash_summary,
-        notices=await _notices(session),
+        crash_groups_n=crash_groups_n,
+        notices=all_notices[:OVERVIEW_ROWS],
+        notices_n=len(all_notices),
+        versions_n=len(version_raw),
         downloads=downloads,
         downloads_state=downloads_state,
+        downloads_late=downloads is not None and downloads.as_of < yesterday,
         fl_min_cohort=FLSettings().min_cohort_size,
         country_on=settings.country_lookup_enabled,
     )
@@ -834,7 +847,7 @@ async def installs(
             Tile(f"{largest.label}'s share", largest.share, f"{number(largest.n)} installs")
         )
     else:
-        tiles.append(Tile("Largest share", "Soon", "Shows once one has 10 or more", wordy=True))
+        tiles.append(Tile("Largest share", "", "Shows once one has 10 or more.", pending=True))
     if dim == "country":
         unknown = next((r for r in rows if r.label == country_name(UNKNOWN)), None)
         tiles.append(
@@ -1335,3 +1348,65 @@ def monthly_csv(data: Overview) -> list[list[str]]:
             ]
         )
     return rows
+
+
+# Downloads, the full list.
+
+
+@dataclass
+class DownloadRow:
+    name: str
+    n: int
+    previous: int | None
+    change: str
+    width: int
+    share: str
+
+
+@dataclass
+class DownloadList:
+    as_of: date | None
+    total: int
+    rows: list[DownloadRow]
+    files_n: int  # app files in the snapshot
+    zeros_n: int  # of those, at 0 in the window
+    q: str
+    sort: str
+    zeros: bool
+
+
+DOWNLOAD_SORTS = ("downloads", "name", "change")
+
+
+def download_list(
+    downloads: Downloads | None, *, q: str = "", sort: str = "downloads", zeros: bool = False
+) -> DownloadList:
+    files = downloads.files if downloads else []
+    widest = max((f.n for f in files), default=0)
+    total = sum(f.n for f in files)
+    picked = [f for f in files if (zeros or f.n) and (not q or q.lower() in f.name.lower())]
+    if sort == "name":
+        picked.sort(key=lambda f: f.name)
+    elif sort == "change":
+        picked.sort(key=lambda f: -((f.n - f.previous) if f.previous is not None else -1e9))
+    rows = [
+        DownloadRow(
+            f.name,
+            f.n,
+            f.previous,
+            delta(f.n, f.previous),
+            max(round(f.n / widest * 100), 2) if widest and f.n else 0,
+            share(f.n, total) if f.n else "·",
+        )
+        for f in picked
+    ]
+    return DownloadList(
+        as_of=downloads.as_of if downloads else None,
+        total=total,
+        rows=rows,
+        files_n=len(files),
+        zeros_n=sum(1 for f in files if not f.n),
+        q=q,
+        sort=sort if sort in DOWNLOAD_SORTS else "downloads",
+        zeros=zeros,
+    )
