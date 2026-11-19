@@ -18,7 +18,7 @@ The product spec and brand live in [pesaclarity/docs](https://github.com/pesacla
 | App status | The notices the team sends (updates, news), and how many check-ins got each one per day | Anything about who asked: no address, account or device id |
 | Install counts | Per open day and month, a random key and keyed digests of the phones' random monthly counting tokens, deleted when the period closes; totals by version, build and (months only, when country lookup is on) country | The token itself, the address, or any link between a total and a phone |
 | Crash reports | Reports people chose to send: app version and build, system version, chip, the kind of error and the stack as code offsets, with the day received (90 days); groups of them with counts and dates (a year after last seen) | Messages, amounts, names, numbers, file paths, the time, the address, any account or install id |
-| Admin dashboard | The owner's passkeys (credential id, public key, counter, label) and 12-hour sessions, stored as digests | Passwords, emails, or a Google account |
+| Admin dashboard | One admin user: username, Argon2id password hash, the authenticator secret encrypted with `NGOME_ADMIN_SECRET_KEY`, keyed hashes of recovery and emailed codes, optional passkeys (credential id, public key, counter, label); sessions and browsers as digests; failure counters and a 90-day audit log keyed by a hash of the address, with country and browser family | The password, codes or secret in plain text, full addresses, or a Google account |
 
 Accounts are optional: the app works fully without one, and only the vault needs sign-in.
 
@@ -55,9 +55,11 @@ To run everything in containers instead: `docker compose up --build`.
 | `GET /v1/app-status?version=&build=&platform=` | The newest app version and active notices for that build, signed with Ed25519. No account; nothing about the caller is logged or stored |
 | `POST` / `GET /v1/admin/app-notices`, `POST /v1/admin/app-notices/{id}/disable` | Create, list and stop notices (admin token) |
 | `POST /v1/crash-reports` | A crash report the person chose to send: exactly the schema below, 16 KB at most. No account, no cookie |
-| `POST /v1/admin/passkey-enrolments`, `GET /v1/admin/passkeys`, `DELETE /v1/admin/passkeys/{id}` | Mint a single-use link that adds a dashboard passkey; list and remove passkeys (admin token) |
-| `GET /admin` (and `/admin/installs`, `/admin/crashes`, `/admin/notices`, `/admin/learning`) | The owner's read-only dashboard, opened with a passkey (off until `NGOME_ADMIN_ORIGIN` is set) |
-| `GET /admin/installs.csv`, `/admin/adoption.csv`, `/admin/monthly.csv` | The dashboard's tables as CSV, exactly as shown: small cells are `<10` or `hidden`, never the stored count |
+| `POST /v1/admin/starter-user` | Make the dashboard's admin user with a temporary password, shown once; with `"reset": true`, start sign-in over (admin token) |
+| `GET /v1/admin/client-address` | The client address the server sees for this request, to check `NGOME_PROXY_HOPS` (admin token) |
+| `GET /v1/admin/passkeys`, `DELETE /v1/admin/passkeys/{id}` | List and remove the dashboard's passkeys (admin token) |
+| `GET /admin` (and `/admin/installs`, `/admin/crashes`, `/admin/notices`, `/admin/learning`, `/admin/security`) | The owner's dashboard, opened with a password and a second factor (off until `NGOME_ADMIN_ORIGIN` is set) |
+| `GET /admin/installs.csv`, `/admin/adoption.csv`, `/admin/monthly.csv` | The dashboard's tables as CSV, exactly as shown: small cells are `<10` or `hidden`, never the stored count. Each needs a second factor from the last 10 minutes |
 
 Access tokens last 10 minutes; refresh tokens rotate on every use and expire after 30 days. The vault keeps the newest 10 backups per account, up to 256 MiB in total.
 
@@ -195,20 +197,34 @@ Decoding offsets into our code's names needs each release's `--split-debug-info`
 
 ### Admin dashboard
 
-The owner's read-only dashboard is served under `/admin`: monthly active installs over six months (split by newest release or by build), daily active installs over 30 or 90 days, versions and builds, notice reach, GitHub release downloads (read from `stats/downloads.csv` on the `stats` branch of pesaclarity/.github, public, `NGOME_DOWNLOADS_CSV_URL`), installs by country, version or build with six months of version adoption, the flood check, and crash groups with reports per day, versions affected and one report exactly as received. Every page takes the same filters (`month`, `days`, `build`, `platform`, `version`), and a crash group's page keeps the list's. The crash rate is reports per 1,000 installs in one calendar month on both sides; reports are opt-in, so it is a floor, not a crash-free rate. Pages are rendered on the server with charts as inline SVG; the only script is the passkey ceremony, and the fonts are served from the dashboard itself, so it makes no third-party requests. Every `/admin` response carries `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Notices are still sent with the admin token.
+The owner's read-only dashboard is served under `/admin`: monthly active installs over six months (split by newest release or by build), daily active installs over 30 or 90 days, versions and builds, notice reach, GitHub release downloads (read from `stats/downloads.csv` on the `stats` branch of pesaclarity/.github, public, `NGOME_DOWNLOADS_CSV_URL`), installs by country, version or build with six months of version adoption, the flood check, and crash groups with reports per day, versions affected and one report exactly as received. Every page takes the same filters (`month`, `days`, `build`, `platform`, `version`), and a crash group's page keeps the list's. The crash rate is reports per 1,000 installs in one calendar month on both sides; reports are opt-in, so it is a floor, not a crash-free rate. Pages are rendered on the server with charts as inline SVG; the only script runs passkeys and small conveniences (every form works without it), and the fonts are served from the dashboard itself, so it makes no third-party requests. Every `/admin` response carries `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Notices are still sent with the admin token.
 
-It is off (every route `404`) until `NGOME_ADMIN_ORIGIN` is set to the dashboard's exact origin, such as `https://ngome-xxxx.a.run.app`; the passkeys are bound to its host name, so changing it later means enrolling again. To serve it on more addresses too (a custom domain beside the `run.app` one), list them in `NGOME_ADMIN_EXTRA_ORIGINS` as JSON, such as `["https://admin.example.org"]`. Each POST must come from one of these origins, and the ceremonies use that origin's host, so every address needs its own passkey.
+It is off (every route `404`) until `NGOME_ADMIN_ORIGIN` is set to the dashboard's exact origin, such as `https://ngome-xxxx.a.run.app`, with `NGOME_ADMIN_EMAIL` (the owner's address for codes and alerts) and `NGOME_ADMIN_SECRET_KEY` (base64 of 32 random bytes that encrypt the authenticator secret). Until both are set, the rest of the server runs as usual and the dashboard refuses sign-in with a page naming what is missing (`503`; the starter command too), so deploying first locks nothing in: set them, sync, and sign in. To serve it on more addresses too (a custom domain beside the `run.app` one), list them in `NGOME_ADMIN_EXTRA_ORIGINS` as JSON, such as `["https://admin.example.org"]`. Each POST must come from one of these origins, and passkey ceremonies use that origin's host, so a passkey works only on the address it was added on.
 
-**Sign-in is by passkey only** (WebAuthn, with py_webauthn), with user verification, against an allow-list (`admin_passkeys`): no password, no email code, no Google. A successful sign-in sets a random session id in a `__Host-ngome_admin` cookie (`Secure`, `HttpOnly`, `SameSite=Strict`) for 12 hours (`NGOME_ADMIN_SESSION_HOURS`); the server keeps only its digest, and sign-out deletes it. Every POST also checks `Origin`.
+**Sign-in** ([ADR 0025](https://github.com/pesaclarity/docs/blob/main/decisions/0025-admin-sign-in-password-and-second-factor.md)) is a username and password, then a second factor, every time:
 
-**Enrolling a passkey.** From a terminal, with the admin token (it never reaches a browser):
+- **Password**: Argon2id (`argon2-cffi`, m = 46 MiB, t = 1, p = 1, at most two hashes at once per instance), at least 15 characters, and refused when it holds the username, `pesaclarity` or the host, or is on the bundled list of 47,023 common passwords (zxcvbn's list, MIT; `src/ngome/admin/data/`). A full breached-password check does not fit in the image and would need an outside call, so there is none.
+- **Authenticator app** (TOTP, RFC 6238: SHA-1, 6 digits, 30 seconds, one step either side): required, set up by QR code at the first sign-in. Each code works once (the last accepted step is stored). The secret is stored encrypted with AES-256-GCM.
+- **Passkey** (optional, the only phishing-proof factor): added from Security after a fresh check; never on its own, always after the password.
+- **Email code** (fallback): 6 digits through Brevo to `NGOME_ADMIN_EMAIL`, never a link; one a minute, three per sign-in, `NGOME_OTP_MAX_PER_HOUR` an hour, `NGOME_ADMIN_EMAIL_CODES_PER_DAY` a day. A session signed in this way can read and download, but not change sign-in settings.
+- **Recovery codes**: ten, shown once, kept as keyed hashes, each usable once.
+
+**Limits** are counted in Postgres, so every instance shares them: 5 wrong passwords for a username from a browser not seen before (10 from a known one, which has its own count) or 20 an hour from one address pause sign-in for 15 minutes, doubling with each pause in 24 hours up to a day (`NGOME_ADMIN_PAUSE_MINUTES` and the `NGOME_ADMIN_*_MAX_FAILURES` settings). 5 wrong codes end a sign-in; 10 in 24 hours pause the second step for an hour. Messages are the same whether the username or the password was wrong. The address is the entry Cloud Run appends to `X-Forwarded-For` (`NGOME_PROXY_HOPS`), never one the caller wrote, and is kept only as a keyed hash.
+
+**Sessions**: a random id in a `__Host-ngome_admin` cookie (`Secure`, `HttpOnly`, `SameSite=Strict`), 8 hours at most (`NGOME_ADMIN_SESSION_HOURS`) and ending after 30 minutes idle (`NGOME_ADMIN_IDLE_MINUTES`); the server keeps only its digest. CSV downloads and every sign-in change need a second factor from the last 10 minutes (`NGOME_ADMIN_REAUTH_MINUTES`); sign-in changes take the authenticator or a passkey, not an emailed code. Every POST checks `Origin` (a plain form post from these `no-referrer` pages sends `Origin: null`, accepted only with `Sec-Fetch-Site: same-origin`).
+
+**Audit and alerts**: sign-ins, failures, pauses and changes are logged in `admin_events` for 90 days (`NGOME_RETENTION_AUTH_EVENT_DAYS`) with a short keyed hash of the address, country and browser family, and never a password, code, secret or the username tried. The owner is emailed when sign-in is paused, after the right password with wrong codes, on a sign-in from a browser not seen before, on any sign-in change, when a recovery code is used (each at most once an hour), and every time the starter command runs.
+
+**The first sign-in.** With the admin token, from a terminal (it never reaches a browser):
 
 ```sh
-curl -X POST "$API/v1/admin/passkey-enrolments" -H "Authorization: Bearer $NGOME_ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' -d '{"label": "Phone"}'
+curl -X POST "$API/v1/admin/starter-user" -H "Authorization: Bearer $NGOME_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"username": "<your username>"}'
 ```
 
-Add `"origin": "<one of NGOME_ADMIN_EXTRA_ORIGINS>"` to the body for a link on another address. It returns a single-use link, valid for 10 minutes (`NGOME_ADMIN_ENROLMENT_MINUTES`). Open it in the browser that holds the passkey, or on the phone whose screen lock will be it, and choose **Add a passkey**. Register two (say a phone and a security key), so one can be lost. `GET /v1/admin/passkeys` lists them and `DELETE /v1/admin/passkeys/{id}` removes one and ends its sessions. Lost every passkey? Enrol again the same way.
+It prints the username and a random 24-character temporary password, once. Open `/admin/sign-in` within 24 hours (`NGOME_ADMIN_STARTER_HOURS`) and sign in with them; the server emails a code to `NGOME_ADMIN_EMAIL`, so the admin token alone cannot open the dashboard. Then, before anything else opens, choose your own password, set up the authenticator app (scan the QR code or type the key, then type a code from the app), and save the ten recovery codes. Running the command again replaces a temporary password; once a real password exists it is refused (`409`) unless the body says `"reset": true`, which replaces the password, wipes the authenticator, recovery codes and every session (passkeys stay) and starts the first sign-in over. The username is 3 to 32 characters of `a-z`, `0-9`, `.`, `_`, `-`; `admin`, `root` and the like are refused.
+
+`GET /v1/admin/passkeys` lists the passkeys and `DELETE /v1/admin/passkeys/{id}` removes one.
 
 ### Backup storage
 
@@ -265,7 +281,7 @@ src/ngome/
   appstatus/ signed app status and admin notices
   counting/ install counts from the monthly counting token, country lookup, suppression
   crashes/  crash report schema, intake and grouping
-  admin/    the passkey dashboard: ceremonies, sessions, pages, templates and static files
+  admin/    the dashboard: sign-in, second factors, limits, audit, pages, templates and static files
   fl/       Flower aggregation server and its settings
   core/     settings, logging with redaction, token and hashing primitives
   db/       SQLAlchemy base, engine and model registry

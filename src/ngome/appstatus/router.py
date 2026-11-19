@@ -11,7 +11,7 @@ the country while answering, when that is on, and is then dropped.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.exc import SQLAlchemyError
 
+from ngome.admin import audit, throttle
 from ngome.api.deps import SessionDep, SettingsDep
 from ngome.appstatus import service
 from ngome.appstatus.schemas import Build, NoticeCreate, NoticeOut, Platform
@@ -107,15 +108,29 @@ async def _count(
 
 
 async def require_admin(
+    request: Request,
+    session: SessionDep,
     settings: SettingsDep,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_admin_bearer)],
 ) -> None:
+    """The admin token, compared in constant time. Wrong tokens count by client address:
+    ``admin_address_max_failures`` an hour, then that address is refused for an hour."""
     expected = settings.admin_token
     if expected is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
+    now = utcnow()
+    address = audit.address_key(settings, client_address(request, settings.proxy_hops))
+    bucket = throttle.bucket(settings, "token-address", address)
+    if await throttle.paused_until(session, bucket, now) is not None:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many tries. Try again later.")
     if credentials is None or not constant_time_equals(
         credentials.credentials, expected.get_secret_value()
     ):
+        rule = throttle.Rule(
+            settings.admin_address_max_failures, timedelta(hours=1), timedelta(hours=1)
+        )
+        await throttle.fail(session, bucket, rule, now)
+        await session.commit()
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "Not authorised",

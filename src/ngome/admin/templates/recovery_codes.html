@@ -1,0 +1,11 @@
+{% extends "_auth.html" %}{% set title = "Recovery codes" %}{% set wide = True %}{% block card %}
+{% if first %}{{ first_steps(5) }}{% endif %}<h1>Save your recovery codes</h1>
+<p class="muted lead-text">If you lose your authenticator and passkeys, each code signs you in once, with your password.{% if not first %} The old codes no longer work.{% endif %}</p>
+{{ alert("Shown only now. The server keeps a scrambled copy and can’t show them again.") }}
+<ol class="codes" aria-label="Recovery codes" data-codes>{% for c in codes %}<li>{{ c }}</li>{% endfor %}</ol>
+<div class="row2"><button class="btn ghost" type="button" data-action="download-codes">Download .txt</button><button class="btn ghost" type="button" data-action="copy-codes">Copy</button></div>
+<form method="post" action="{{ action }}">
+<label class="check"><input type="checkbox" name="saved" value="yes" required data-gate="finish"><span>I’ve put them somewhere safe, away from this computer (a password manager or on paper).</span></label>
+<button class="btn" type="submit" id="finish">{{ "Open the dashboard" if first else "Back to Security" }}</button>
+</form>
+{% endblock %}
