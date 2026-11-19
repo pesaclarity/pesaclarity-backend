@@ -10,7 +10,7 @@ import asyncio
 import csv
 import io
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -88,7 +88,8 @@ async def overview_page(
     fetch = asyncio.create_task(source.csv_text()) if source else None
     filters = _filters(request, default_days=30, day_choices=views.OVERVIEW_DAYS)
     text = await fetch if fetch else None
-    downloads = summarise(text) if text else None
+    # The page's one "up to" day is yesterday (UTC); downloads end on the same day.
+    downloads = summarise(text, until=utcnow().date() - timedelta(days=1)) if text else None
     data = await views.overview(
         session,
         settings,
@@ -98,6 +99,30 @@ async def overview_page(
         downloads_state="off" if source is None else "ok" if downloads else "unread",
     )
     return _page(request, "overview.html", nav="overview", data=data, **shell)
+
+
+@pages.get("/downloads", dependencies=[On])
+async def downloads_page(request: Request, shell: Shell) -> HTMLResponse:
+    source = _downloads_source(request)
+    text = await source.csv_text() if source else None
+    yesterday = utcnow().date() - timedelta(days=1)
+    downloads = summarise(text, until=yesterday) if text else None
+    q = (request.query_params.get("q") or "").strip()[:64]
+    data = views.download_list(
+        downloads,
+        q=q,
+        sort=request.query_params.get("sort") or "downloads",
+        zeros=request.query_params.get("zeros") == "1",
+    )
+    return _page(
+        request,
+        "downloads.html",
+        nav="overview",
+        data=data,
+        as_of=views.short_day(yesterday),
+        state="off" if source is None else "ok" if downloads else "unread",
+        **shell,
+    )
 
 
 @pages.get("/installs", dependencies=[On])
