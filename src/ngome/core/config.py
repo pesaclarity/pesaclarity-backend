@@ -4,7 +4,7 @@ import base64
 import binascii
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -14,6 +14,7 @@ Environment = Literal["development", "test", "production"]
 
 _MIN_SECRET_LENGTH = 32
 _ED25519_SEED_BYTES = 32
+_ORIGIN_PATTERN = r"^https?://[a-z0-9.-]+(:\d+)?$"
 
 
 class Settings(BaseSettings):
@@ -143,7 +144,13 @@ class Settings(BaseSettings):
     # The admin dashboard (``/admin``), opened only with an enrolled passkey. Both unset
     # turn it off. ``admin_origin`` is the dashboard's exact origin, such as
     # ``https://api.example.org``; the passkey's relying party id is its host.
-    admin_origin: str | None = Field(default=None, pattern=r"^https?://[a-z0-9.-]+(:\d+)?$")
+    # ``admin_extra_origins`` are more exact origins serving the same dashboard, as a JSON
+    # list (a custom domain beside the run.app address). A passkey is bound to the host it
+    # was added on, so each origin needs its own.
+    admin_origin: str | None = Field(default=None, pattern=_ORIGIN_PATTERN)
+    admin_extra_origins: list[Annotated[str, Field(pattern=_ORIGIN_PATTERN)]] = Field(
+        default_factory=list
+    )
     admin_session_hours: int = Field(default=12, ge=1, le=24)
     admin_enrolment_minutes: int = Field(default=10, ge=1, le=60)
     downloads_csv_url: str | None = Field(
@@ -191,6 +198,13 @@ class Settings(BaseSettings):
         if sslmode and "ssl" not in query:
             query["ssl"] = sslmode
         return urlunsplit(parts._replace(scheme="postgresql+asyncpg", query=urlencode(query)))
+
+    @property
+    def admin_origins(self) -> tuple[str, ...]:
+        """Every origin the dashboard answers on, ``admin_origin`` first; empty when off."""
+        if self.admin_origin is None:
+            return ()
+        return (self.admin_origin, *self.admin_extra_origins)
 
     @model_validator(mode="after")
     def _check_secrets(self) -> Self:
@@ -246,12 +260,12 @@ class Settings(BaseSettings):
                 raise ValueError("app_status_signing_seed must be 32 bytes, base64-encoded")
         if self.country_lookup_enabled and self.country_db_path is None:
             raise ValueError("country_db_path is required when country_lookup_enabled is on")
-        if (
-            self.admin_origin is not None
-            and self.environment == "production"
-            and not self.admin_origin.startswith("https://")
+        if self.admin_extra_origins and self.admin_origin is None:
+            raise ValueError("admin_extra_origins needs admin_origin")
+        if self.environment == "production" and any(
+            not origin.startswith("https://") for origin in self.admin_origins
         ):
-            raise ValueError("admin_origin must be https in production")
+            raise ValueError("admin_origin and admin_extra_origins must be https in production")
         return self
 
     @model_validator(mode="after")

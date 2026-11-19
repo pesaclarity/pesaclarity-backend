@@ -25,6 +25,7 @@ from tests.soft_passkey import SoftPasskey
 from tests.test_app_status import TEST_SEED
 
 ORIGIN = "https://admin.test"
+OTHER = "https://other.test"
 ADMIN_TOKEN = "test-admin-token-" + "z" * 32
 ADMIN = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
 SAME = {"Origin": ORIGIN}
@@ -54,17 +55,23 @@ def maker(app: FastAPI) -> async_sessionmaker[AsyncSession]:
     return sessions
 
 
-async def enrol(client: httpx.AsyncClient, passkey: SoftPasskey, label: str = "Phone") -> None:
-    minted = await client.post("/v1/admin/passkey-enrolments", json={"label": label}, headers=ADMIN)
+async def enrol(
+    client: httpx.AsyncClient, passkey: SoftPasskey, label: str = "Phone", origin: str = ORIGIN
+) -> None:
+    # The default origin is left out of the request, as a terminal would.
+    request: dict[str, str] = {"label": label} | ({} if origin == ORIGIN else {"origin": origin})
+    minted = await client.post("/v1/admin/passkey-enrolments", json=request, headers=ADMIN)
     assert minted.status_code == 201, minted.text
     url = minted.json()["url"]
-    assert url.startswith(f"{ORIGIN}/admin/enrol/")
+    assert url.startswith(f"{origin}/admin/enrol/")
     token = url.rsplit("/", 1)[1]
     page = await client.get(f"/admin/enrol/{token}")
     assert "Add a passkey" in page.text
-    start = await client.post("/admin/enrol/options", json={"token": token}, headers=SAME)
+    here = {"Origin": origin}
+    start = await client.post("/admin/enrol/options", json={"token": token}, headers=here)
     assert start.status_code == 200, start.text
     body = start.json()
+    assert body["options"]["rp"]["id"] == passkey.rp_id
     finish = await client.post(
         "/admin/enrol/verify",
         json={
@@ -72,20 +79,22 @@ async def enrol(client: httpx.AsyncClient, passkey: SoftPasskey, label: str = "P
             "challenge_id": body["challenge_id"],
             "credential": passkey.register(body["options"]),
         },
-        headers=SAME,
+        headers=here,
     )
     assert finish.status_code == 200, finish.text
     client.cookies.clear()
 
 
-async def sign_in(client: httpx.AsyncClient, passkey: SoftPasskey) -> httpx.Response:
-    start = await client.post("/admin/sign-in/options", headers=SAME)
+async def sign_in(
+    client: httpx.AsyncClient, passkey: SoftPasskey, origin: str = ORIGIN
+) -> httpx.Response:
+    start = await client.post("/admin/sign-in/options", headers={"Origin": origin})
     assert start.status_code == 200, start.text
     body = start.json()
     return await client.post(
         "/admin/sign-in/verify",
         json={"challenge_id": body["challenge_id"], "credential": passkey.sign_in(body["options"])},
-        headers=SAME,
+        headers={"Origin": origin},
     )
 
 
@@ -255,6 +264,56 @@ async def test_ceremonies_check_the_origin(client: httpx.AsyncClient) -> None:
     assert (await client.post("/admin/sign-in/options")).status_code == 403
     evil = {"Origin": "https://evil.example"}
     assert (await client.post("/admin/sign-in/options", headers=evil)).status_code == 403
+
+
+async def test_a_second_origin_has_its_own_passkeys(
+    app: FastAPI, settings: Settings, client: httpx.AsyncClient
+) -> None:
+    app.state.settings = settings.model_copy(update={"admin_extra_origins": [OTHER]})
+    first = SoftPasskey("admin.test", ORIGIN)
+    await enrol(client, first)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url=OTHER) as other:
+        second = SoftPasskey("other.test", OTHER)
+        await enrol(other, second, label="Mac", origin=OTHER)
+        response = await sign_in(other, second, origin=OTHER)
+        assert response.status_code == 200, response.text
+        assert COOKIE in response.cookies
+        other.cookies.clear()
+        # A passkey works only on the host it was added on, whichever origin the page claims.
+        assert (await sign_in(other, first, origin=OTHER)).status_code == 400
+        start = (await other.post("/admin/sign-in/options", headers={"Origin": OTHER})).json()
+        body = {
+            "challenge_id": start["challenge_id"],
+            "credential": first.sign_in(start["options"], origin=OTHER),
+        }
+        refused = await other.post("/admin/sign-in/verify", json=body, headers={"Origin": OTHER})
+        assert refused.status_code == 400
+    assert (await sign_in(client, second)).status_code == 400
+    assert (await sign_in(client, first)).status_code == 200
+    listed = await client.get("/v1/admin/passkeys", headers=ADMIN)
+    assert [p["label"] for p in listed.json()] == ["Phone", "Mac"]
+
+
+async def test_enrolment_links_open_only_on_the_dashboards_origins(
+    app: FastAPI, settings: Settings, client: httpx.AsyncClient
+) -> None:
+    for origin in (OTHER, "https://evil.example"):
+        minted = await client.post(
+            "/v1/admin/passkey-enrolments", json={"label": "x", "origin": origin}, headers=ADMIN
+        )
+        assert minted.status_code == 422
+    from_other = {"Origin": OTHER}
+    assert (await client.post("/admin/sign-in/options", headers=from_other)).status_code == 403
+    app.state.settings = settings.model_copy(update={"admin_extra_origins": [OTHER]})
+    assert (await client.post("/admin/sign-in/options", headers=from_other)).status_code == 200
+
+
+def test_extra_origins_need_the_main_one(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="admin_extra_origins needs admin_origin"):
+        make_settings(tmp_path, admin_extra_origins=[OTHER])
+    with pytest.raises(ValueError, match="admin_extra_origins"):
+        make_settings(tmp_path, admin_origin=ORIGIN, admin_extra_origins=["other.test"])
 
 
 async def test_removing_a_passkey_ends_its_sessions(
