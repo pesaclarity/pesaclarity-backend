@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% set page_title = "Crashes" %}
+{% block main %}
+<div class="head"><div><h1>Crashes</h1><div class="sub">Reports people chose to send, grouped by error and the first frames. Last {{ data.days }} days.</div></div>
+<div class="filters">
+<details class="pick"><summary class="pill">{{ data.days }} days ▾</summary><div class="menu">{% for d in windows %}<a href="/admin/crashes?days={{ d }}{% if data.build %}&amp;build={{ data.build }}{% endif %}"{% if d == data.days %} class="on"{% endif %}>{{ d }} days</a>{% endfor %}</div></details>
+<details class="pick"><summary class="pill">{{ builds[data.build] if data.build else "All builds" }} ▾</summary><div class="menu"><a href="/admin/crashes?days={{ data.days }}"{% if not data.build %} class="on"{% endif %}>All builds</a>{% for key, name in builds.items() %}<a href="/admin/crashes?days={{ data.days }}&amp;build={{ key }}"{% if key == data.build %} class="on"{% endif %}>{{ name }}</a>{% endfor %}</div></details>
+</div></div>
+<div class="grid tiles">
+{% for tile in data.tiles %} <div class="card"><div class="label">{{ tile.label }}</div><div class="num">{{ tile.value }}</div>{% if tile.delta %}<div class="delta">{{ tile.delta }}</div>{% endif %}</div>
+{% endfor %}</div>
+<div class="card mt16">{% if data.groups %}<table><thead><tr><th>Error and where</th><th class="hide-s">Versions</th><th class="n">Reports</th><th class="hide-s">Trend</th><th class="n hide-s">First seen</th><th class="n">Last seen</th></tr></thead><tbody>
+{% for g in data.groups %}<tr><td><a class="row" href="/admin/crashes/{{ g.id }}"><strong>{{ g.error }}</strong>{% if g.is_new %} <span class="tag new">new</span>{% endif %}{% if g.function %}<div class="mono sup">{{ g.function }}</div><div class="mono sup hide-s">{{ g.location }}</div>{% else %}<div class="mono sup">{{ g.first_frame }}</div><div class="sup hide-s">Not decoded</div>{% endif %}</a></td><td class="hide-s">{{ g.versions }}</td><td class="n">{{ g.reports }}</td><td class="hide-s">{{ g.trend }}</td><td class="n hide-s">{{ g.first_seen }}</td><td class="n">{{ g.last_seen }}</td></tr>
+{% endfor %}</tbody></table>{% else %}<p class="sub">No reports in these {{ data.days }} days.</p>{% endif %}</div>
+<p class="note">Reports are deleted after 90 days; a group keeps only its counts and dates. Nothing here names a person, phone or account.</p>
+{% endblock %}

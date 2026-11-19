@@ -1,7 +1,9 @@
 """Retention: delete sign-in data once it is past the period we promise to keep it.
 
 Run daily from cron, a systemd timer or a Kubernetes CronJob with ``ngome-purge`` (see the
-README). The same run retries backup objects still queued for deletion.
+README). The same run retries backup objects still queued for deletion, deletes counting
+digests and keys whose day or month has closed, old crash reports and groups, and expired
+admin sessions (ADR 0024).
 """
 
 import asyncio
@@ -14,10 +16,13 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ngome.admin.passkeys import purge_admin
 from ngome.auth.models import AuthEvent, OtpChallenge
 from ngome.core.config import Settings, get_settings
 from ngome.core.logging import configure_logging, get_logger
 from ngome.core.security import utcnow
+from ngome.counting.retention import purge_counting
+from ngome.crashes.service import purge_crashes
 from ngome.db.session import create_engine, create_sessionmaker
 from ngome.vault.service import SWEEP_BATCH, sweep_deletions
 from ngome.vault.storage import BlobStore, build_blob_store
@@ -31,6 +36,12 @@ class PurgeResult:
     auth_events: int
     blobs_deleted: int = 0
     blobs_failed: int = 0
+    count_digests: int = 0
+    count_keys: int = 0
+    count_daily_rows: int = 0
+    crash_reports: int = 0
+    crash_groups: int = 0
+    admin_rows: int = 0
 
 
 async def purge_expired(
@@ -44,13 +55,20 @@ async def purge_expired(
     otp = await session.execute(delete(OtpChallenge).where(OtpChallenge.expires_at < otp_cutoff))
     events = await session.execute(delete(AuthEvent).where(AuthEvent.created_at < event_cutoff))
     await session.commit()
+    counting = await purge_counting(session, settings, now=now)
+    crash_reports, crash_groups = await purge_crashes(session, settings, today=now.date())
+    admin_rows = await purge_admin(session, now=now)
     result = PurgeResult(
         otp_challenges=cast(CursorResult[Any], otp).rowcount,
         auth_events=cast(CursorResult[Any], events).rowcount,
+        count_digests=counting.digests,
+        count_keys=counting.keys,
+        count_daily_rows=counting.daily_rows,
+        crash_reports=crash_reports,
+        crash_groups=crash_groups,
+        admin_rows=admin_rows,
     )
-    log.info(
-        "retention.purged", otp_challenges=result.otp_challenges, auth_events=result.auth_events
-    )
+    log.info("retention.purged", **dataclasses.asdict(result))
     return result
 
 

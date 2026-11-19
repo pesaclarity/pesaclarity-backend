@@ -13,11 +13,14 @@ dependencies = [
     "email-validator>=2.2",
     "fastapi>=0.162.0",
     "httpx>=0.28.1",
+    "jinja2>=3.1.6",
+    "maxminddb>=3.3.0",
     "pydantic-settings>=2.16.1",
     "pyjwt[crypto]>=2.15.1",
     "sqlalchemy[asyncio]>=2.1.6",
     "structlog>=26.1.0",
     "uvicorn[standard]>=0.54.0",
+    "webauthn>=2.7.1",
 ]
 
 [project.optional-dependencies]
