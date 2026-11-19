@@ -16,7 +16,7 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ngome.admin.passkeys import purge_admin
+from ngome.admin.accounts import purge as purge_admin
 from ngome.auth.models import AuthEvent, OtpChallenge
 from ngome.core.config import Settings, get_settings
 from ngome.core.logging import configure_logging, get_logger
@@ -57,7 +57,7 @@ async def purge_expired(
     await session.commit()
     counting = await purge_counting(session, settings, now=now)
     crash_reports, crash_groups = await purge_crashes(session, settings, today=now.date())
-    admin_rows = await purge_admin(session, now=now)
+    admin_rows = await purge_admin(session, settings, now=now)
     result = PurgeResult(
         otp_challenges=cast(CursorResult[Any], otp).rowcount,
         auth_events=cast(CursorResult[Any], events).rowcount,

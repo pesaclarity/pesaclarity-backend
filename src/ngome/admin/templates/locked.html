@@ -1,0 +1,9 @@
+{% extends "_auth.html" %}{% set title = "Try again later" %}{% block card %}
+<div class="big-ic">{{ icon("lock") }}</div>
+<h1>Sign-in is paused</h1>
+<p class="muted lead-text">There were too many wrong tries. To keep the dashboard safe, sign-in from here is paused for a while.</p>
+<div class="timer" role="timer">{{ minutes }}:{{ "%02d" % seconds }}<small>Try again after {{ until }} UTC</small></div>
+<a class="btn off" href="/admin/sign-in" aria-disabled="true">Try again</a>
+<ul class="facts"><li>{{ icon("tick") }}<span>Each pause after this one is longer, up to a day.</span></li>
+<li>{{ icon("tick") }}<span>A browser you’ve signed in on before is paused separately, so someone else’s tries don’t lock you out.</span></li></ul>
+{% endblock %}{% block under %}<p class="muted under">The owner gets an email when sign-in is paused.</p>{% endblock %}

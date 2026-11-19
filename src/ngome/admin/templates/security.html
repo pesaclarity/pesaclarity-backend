@@ -1,0 +1,30 @@
+{% extends "base.html" %}{% from "_ui.html" import icon %}{% block main %}
+{% macro srow(ic, title, desc, acts="") %}<div class="srow"><span class="ic">{{ icon(ic) }}</span><span><b>{{ title }}</b><span class="d">{{ desc }}</span></span><span class="acts">{{ acts }}</span></div>{% endmacro %}
+<div class="head"><div><h1>Security</h1><div class="sub">How you sign in to this dashboard, and who is signed in.</div></div></div>
+{% if message %}<div class="banner" role="status"><span aria-hidden="true">ⓘ</span><div>{{ message }}</div></div>{% endif %}
+<div class="sec">
+<section class="card"><div class="card-h"><div><h2>Sign-in</h2><div class="sub">Step one, every time</div></div></div>
+{{ srow("key", "Username", data.username) }}
+{% set change %}<a class="btn sm ghost" href="/admin/security/password">Change</a>{% endset %}
+{{ srow("lock", "Password", ("Changed " ~ data.password_changed ~ " · " if data.password_changed else "") ~ "15 characters or more", change) }}
+</section>
+<section class="card"><div class="card-h"><div><h2>Recovery codes</h2><div class="sub">For when every other factor is lost</div></div></div>
+<div class="left">{{ data.codes_left }}<small>of {{ data.codes_total }} left</small></div><div class="dots" aria-hidden="true">{% for i in range(data.codes_total) %}<i{% if i >= data.codes_left %} class="used"{% endif %}></i>{% endfor %}</div>
+<div class="meta-line">{% if data.codes_made %}Made {{ data.codes_made }}.{% endif %}{% if data.codes_left < 3 %} <b>Few left: make new codes.</b>{% endif %}</div>
+<div class="card-foot"><form method="post" action="/admin/security/recovery-codes"><button class="btn sm ghost" type="submit">Make new codes</button></form><span class="muted meta-line">Replaces all ten.</span></div></section>
+<section class="card full"><div class="card-h"><div><h2>Second checks</h2><div class="sub">The authenticator is required; passkeys are optional and phishing-proof.</div></div></div>
+{% for p in data.passkeys %}{% set rm %}<form method="post" action="/admin/security/passkeys/{{ p.id }}/remove"><button class="btn sm danger" type="submit">Remove</button></form>{% endset %}{% set title %}Passkey · {{ p.label }} <span class="tag ok">Strongest</span>{% endset %}{{ srow("passkey", title, "Added " ~ p.added ~ " · " ~ ("last used " ~ p.used if p.used else "not used yet"), rm) }}{% endfor %}
+{% set rep %}<a class="btn sm ghost" href="/admin/security/authenticator">Replace</a>{% endset %}{% set title %}Authenticator app <span class="tag">Required</span>{% endset %}
+{{ srow("app", title, ("Added " ~ data.totp_added if data.totp_added else "") ~ (" · last used " ~ data.totp_used if data.totp_used else ""), rep) }}
+{% set title %}Email code <span class="tag">Fallback</span>{% endset %}{{ srow("mail", title, data.email ~ ", set on the server (NGOME_ADMIN_EMAIL) · can’t change sign-in settings") }}
+<div class="card-foot"><button class="btn sm ghost" type="button" data-action="add-passkey">Add a passkey</button><span class="err left" id="error" role="alert"></span></div></section>
+<section class="card"><div class="card-h"><div><h2>Signed-in browsers</h2><div class="sub">Each ends after {{ data.hours }} hours, or {{ data.idle }} minutes idle</div></div></div>
+{% for s in data.sessions %}{% set out %}{% if not s.this %}<form method="post" action="/admin/security/sessions/{{ s.handle }}/end"><button class="btn sm danger" type="submit">Sign out</button></form>{% endif %}{% endset %}{% set title %}{{ s.browser }}{% if s.this %} <span class="tag">This one</span>{% endif %}{% endset %}{{ srow("laptop", title, s.desc, out) }}{% endfor %}
+{% if data.sessions | length > 1 %}<div class="card-foot"><form method="post" action="/admin/security/sessions/end-others"><button class="btn sm danger" type="submit">Sign out everywhere else</button></form></div>{% endif %}</section>
+<section class="card"><div class="card-h"><div><h2>Email alerts</h2><div class="sub">Sent to {{ data.email }}</div></div></div><ul class="alerts">
+{% for t in ["Sign-in paused after too many tries", "Right password, then wrong second checks", "Sign-in from a browser not seen before", "A factor, the password or recovery codes changed", "A recovery code used", "The set-up command run with the admin token"] %}<li>{{ icon("tick") }}<span>{{ t }}</span></li>{% endfor %}</ul><div class="meta-line">At most one email of each kind an hour.</div></section>
+<section class="card full"><div class="card-h"><div><h2>Recent activity</h2><div class="sub">Kept 90 days. No passwords, codes, usernames tried or full addresses are stored.</div></div></div>
+{% for e in data.events %}<div class="ev"><time>{{ e.when }}</time><span>{{ e.what }}<span class="w"> · {{ e.where }}</span></span><span class="r"><span class="tag{% if e.tone %} {{ e.tone }}{% endif %}">{{ e.badge }}</span></span></div>{% else %}<p class="muted">Nothing yet.</p>{% endfor %}
+</section>
+</div>
+{% endblock %}
