@@ -91,7 +91,7 @@ def problem(password: str, *, username: str, host: str) -> str | None:
     for word in (username.lower(), "pesaclarity", "pesa clarity", host.lower()):
         if word and word in lowered:
             return (
-                "Don\u2019t use the username, \u201cpesaclarity\u201d or the "
+                "Don\u2019t use the username, \u201cPesa Clarity\u201d or the "
                 "dashboard\u2019s address in it."
             )
     if len(set(lowered)) < 5 or _is_common(lowered):
