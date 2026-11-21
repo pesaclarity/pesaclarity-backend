@@ -2,16 +2,23 @@ version: 2
 updates:
   - package-ecosystem: uv
     directory: /
+    target-branch: dev # main takes only promotions from dev
     schedule:
       interval: weekly
     groups:
       python:
         patterns: ["*"]
+    ignore:
+      # 6.x has no Intel Mac wheel (see pyproject.toml).
+      - dependency-name: cbor2
+        versions: [">=6"]
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev # main takes only promotions from dev
     schedule:
       interval: weekly
   - package-ecosystem: docker
     directory: /
+    target-branch: dev # main takes only promotions from dev
     schedule:
       interval: weekly
