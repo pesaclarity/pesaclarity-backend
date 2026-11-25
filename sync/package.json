@@ -1,0 +1,20 @@
+{
+  "name": "pesaclarity-sync",
+  "private": true,
+  "type": "module",
+  "description": "Group sync server for shared spaces (decision 0033), run on celld",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --experimental-strip-types --no-warnings --test test/unit.test.ts",
+    "test:e2e": "node --experimental-strip-types --no-warnings --test --test-concurrency=1 test/e2e.test.ts",
+    "test": "npm run typecheck && npm run test:unit && npm run test:e2e",
+    "dev": "celld dev",
+    "deploy": "celld deploy ."
+  },
+  "engines": { "node": ">=22.6" },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20250124.3",
+    "esbuild": "0.24.2",
+    "typescript": "5.7.3"
+  }
+}

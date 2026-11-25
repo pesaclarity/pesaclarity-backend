@@ -107,6 +107,15 @@ else
     "No MinIO at $s3_endpoint. Start it: docker compose up -d --wait minio (or tool/check --up)"
 fi
 
+# The group sync server (sync/, decision 0033) on a local celld node.
+if command -v celld >/dev/null && command -v npm >/dev/null; then
+  step "Sync server: install (npm ci)" "see the npm output above" npm --prefix sync ci --silent
+  step "Sync server: typecheck, unit and end-to-end tests (celld dev)" \
+    "fix the failing tests above; 'cd sync && npm test' runs them again" npm --prefix sync test --silent
+else
+  skip "Sync server tests" "celld or npm is not installed. See sync/README.md (celld 0.6.3, Node 22.6+)."
+fi
+
 # The Docker image builds (deploys build it again; this catches a broken Dockerfile first).
 if $docker_ok; then
   step "Docker build" "fix the Dockerfile or the files it copies" \

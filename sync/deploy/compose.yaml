@@ -1,0 +1,69 @@
+# Two celld nodes behind Caddy (TLS) on one host, for staging (decision 0033).
+# Peer traffic stays on the private "cells" network; only Caddy is published.
+#
+#   cp .env.example .env    # then fill it in; .env is never committed
+#   docker compose up -d
+#
+# Deploy the Worker into the same bucket first: see ../README.md.
+
+x-celld: &celld
+  image: ghcr.io/denoland/celld:0.6.3
+  restart: unless-stopped
+  env_file: .env
+  networks: [cells]
+  # No request bodies or addresses are logged by the Worker; rotate what the
+  # node logs, and keep the host's log retention at 7 days or less.
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  celld-a:
+    <<: *celld
+    hostname: celld-a
+    volumes:
+      - celld-a:/var/lib/celld
+      - ${GCS_CREDENTIALS_FILE:-/dev/null}:/run/secrets/gcs.json:ro
+    environment:
+      CELLD_WATCH: /var/lib/celld/state
+    command:
+      - --bucket=${CELLD_BUCKET}
+      - --listen=0.0.0.0:8080
+      - --internal-listen=0.0.0.0:8081
+      - --advertise=celld-a:8081
+      - --trust-forwarded-headers
+
+  celld-b:
+    <<: *celld
+    hostname: celld-b
+    volumes:
+      - celld-b:/var/lib/celld
+      - ${GCS_CREDENTIALS_FILE:-/dev/null}:/run/secrets/gcs.json:ro
+    environment:
+      CELLD_WATCH: /var/lib/celld/state
+    command:
+      - --bucket=${CELLD_BUCKET}
+      - --listen=0.0.0.0:8080
+      - --internal-listen=0.0.0.0:8081
+      - --advertise=celld-b:8081
+      - --trust-forwarded-headers
+
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      SYNC_DOMAIN: ${SYNC_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    networks: [cells]
+    depends_on: [celld-a, celld-b]
+
+networks:
+  cells: { internal: false }
+
+volumes:
+  celld-a: {}
+  celld-b: {}
+  caddy-data: {}

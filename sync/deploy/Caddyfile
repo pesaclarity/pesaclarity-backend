@@ -1,0 +1,15 @@
+# TLS in front of celld. Caddy gets and renews the certificate itself.
+# No access log is configured, so Caddy stores no client addresses.
+{$SYNC_DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 2MB
+	}
+	reverse_proxy celld-a:8080 celld-b:8080 {
+		lb_policy first
+		health_uri /healthz
+		health_interval 10s
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+	}
+}
