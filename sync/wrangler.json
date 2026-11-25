@@ -1,0 +1,13 @@
+{
+  "name": "pesaclarity-sync",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+  "durable_objects": {
+    "bindings": [{ "name": "SPACES", "class_name": "SpaceCell" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SpaceCell"] }],
+  "r2_buckets": [{ "binding": "BATCHES", "bucket_name": "pesaclarity-sync-batches" }],
+  "vars": {
+    "LICENCE_PUBLIC_KEY": ""
+  }
+}
