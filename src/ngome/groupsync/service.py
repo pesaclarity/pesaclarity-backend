@@ -8,20 +8,28 @@ instances share Postgres, so:
   so cursors are never shared or reused and a lower one is always committed first;
 - a push is idempotent by batch id, checked under the lock and backed by a unique
   constraint;
-- a request's nonce is written in the same transaction as what the request does, with the
-  primary key refusing a second copy, so of two copies of one signed request sent to two
+- every request's nonce is written in the same transaction as what the request does, with
+  the primary key refusing a second copy, so of two copies of one signed request sent to two
   instances exactly one is accepted.
 
-A request is checked in this order: signature and clock, then whether the space exists and
-the signer may do this, then the per-key limits, and last the nonce. So only a request that
-is otherwise allowed writes anything, and someone who is not a member of a space cannot add
+A request is checked in this order: the signature and the clock, once its body has arrived;
+whether the space exists and the signer may do this; whether its nonce has been seen (a
+read, so a copy of an old request is refused before it can use up the member's allowance or
+learn anything from headers the signature does not cover); the per-key limits and the rest;
+and last the nonce is written, with the clock looked at once more. So only a request that is
+otherwise allowed writes anything, and someone who is not a member of a space cannot add
 rows to the database.
+
+Nonces are kept as digests and outlive their space, so a copy of a request made before a
+space was deleted is still refused if the space is made again. They are swept a minute after
+they run out, never sooner, so a sweep cannot let a copy in while it is being served.
 
 Batch bytes go to the blob store before their row, so a row never points at a missing
 object. The object key is noted first (``sync_pending_blobs``), so an object whose push died
 half way is found and deleted by the purge.
 """
 
+import hashlib
 import json
 import secrets
 import time
@@ -39,6 +47,7 @@ from ngome.db.upsert import insert_for
 from ngome.groupsync.licence import Ed25519LicenceVerifier, LicenceVerifier
 from ngome.groupsync.models import SyncBatch, SyncMember, SyncNonce, SyncPendingBlob, SyncSpace
 from ngome.groupsync.protocol import (
+    BODY_SECONDS,
     CLOCK_WINDOW_MS,
     MAX_MEMBERS,
     MAX_SAFE_INTEGER,
@@ -62,6 +71,10 @@ log = get_logger(__name__)
 PENDING_BLOB_GRACE_MS = 60 * 60_000
 # Old nonces are swept this often by each instance, and by the daily purge.
 NONCE_SWEEP_EVERY_MS = 60_000
+# A nonce is swept only once it ran out this long ago. A request is inside its clock window
+# when its nonce is written, so no sweep can clear the way for a copy that is still being
+# served, nor can an instance whose clock is a little ahead.
+NONCE_SWEEP_MARGIN_MS = 60_000
 # How long deleting a space spends removing objects before leaving the rest, already queued,
 # to the purge.
 DELETE_NOW_SECONDS = 8.0
@@ -76,6 +89,11 @@ class RefusedError(Exception):
         super().__init__(code)
         self.status = status
         self.code = code
+
+
+class ObjectMissingError(Exception):
+    """A batch's row is there and its object is not. Never expected: the store lost it, or
+    the server is reading another store than the one it was written to."""
 
 
 def wall_clock_ms() -> int:
@@ -95,6 +113,8 @@ class GroupSync:
     # this instance's memory.
     addresses: RateLimiter
     clock: Callable[[], int] = wall_clock_ms
+    # How long a request's body may take to arrive, before the allowance for its size.
+    body_seconds: float = BODY_SECONDS
     _next_nonce_sweep: int = field(default=0, init=False)
 
     @classmethod
@@ -110,7 +130,8 @@ class GroupSync:
         )
 
     def nonce_sweep_due(self, now_ms: int) -> bool:
-        """True about once a minute, when this instance should clear old nonces."""
+        """True about once a minute, when this instance should clear old nonces (with
+        :func:`purge_nonces`, which leaves the margin)."""
         if now_ms < self._next_nonce_sweep:
             return False
         self._next_nonce_sweep = now_ms + NONCE_SWEEP_EVERY_MS
@@ -141,6 +162,12 @@ class _Space:
     last_cursor: int
 
 
+@dataclass(frozen=True, slots=True)
+class _Member:
+    acked: int
+    served: int
+
+
 # ------------------------------------------------------------ shared checks
 
 
@@ -161,13 +188,54 @@ async def _is_member(session: AsyncSession, space_id: str, key: str) -> bool:
     return found is not None
 
 
-async def _member_space(session: AsyncSession, call: Call, *, lock: bool = False) -> _Space:
-    space = await _space(session, call.space, lock=lock)
+async def _member_space(
+    session: AsyncSession, call: Call, *, lock: bool = False
+) -> tuple[_Space, _Member]:
+    """The space and the signer's place in it, or the refusal.
+
+    Without the lock both are read in one statement, so a space being deleted is either
+    there with its members or gone: never there with its members missing. With the lock the
+    space's row is taken first and the member read after it; every change to members holds
+    that lock, so the member is as it stands.
+    """
+    if lock:
+        space = await _space(session, call.space, lock=True)
+        row = None
+        if space is not None:
+            row = (
+                await session.execute(
+                    select(SyncMember.acked, SyncMember.served).where(
+                        SyncMember.space_id == call.space, SyncMember.key == call.signer
+                    )
+                )
+            ).first()
+        member = None if row is None else _Member(row.acked, row.served)
+    else:
+        both = (
+            await session.execute(
+                select(
+                    SyncSpace.owner_key,
+                    SyncSpace.valid_until,
+                    SyncSpace.last_cursor,
+                    SyncMember.key,
+                    SyncMember.acked,
+                    SyncMember.served,
+                )
+                .select_from(SyncSpace)
+                .outerjoin(
+                    SyncMember,
+                    (SyncMember.space_id == SyncSpace.id) & (SyncMember.key == call.signer),
+                )
+                .where(SyncSpace.id == call.space)
+            )
+        ).first()
+        space = None if both is None else _Space(*both[:3])
+        member = None if both is None or both.key is None else _Member(both.acked, both.served)
     if space is None:
         raise RefusedError(404, "not_found")
-    if not await _is_member(session, call.space, call.signer):
+    if member is None:
         raise RefusedError(403, "not_member")
-    return space
+    return space, member
 
 
 async def _owner_space(session: AsyncSession, call: Call, *, lock: bool = False) -> _Space:
@@ -184,35 +252,50 @@ def _limit(limiter: RateLimiter, call: Call) -> None:
         raise RefusedError(429, "rate_limited")
 
 
-async def _nonce_seen(session: AsyncSession, call: Call) -> bool:
+def _nonce_digest(space_id: str, nonce: str) -> bytes:
+    """What is kept of a nonce: neither the space id nor the nonce can hold a newline."""
+    return hashlib.sha256(f"{space_id}\n{nonce}".encode()).digest()
+
+
+async def _refuse_replay(session: AsyncSession, call: Call) -> None:
+    """Refuse a request whose nonce this space has seen, before it is looked at any further.
+
+    A read only. The nonce is written by :func:`_use_nonce` when the request is accepted,
+    which is also what settles two copies racing each other.
+    """
     expires = await session.scalar(
         select(SyncNonce.expires_at).where(
-            SyncNonce.space_id == call.space, SyncNonce.nonce == call.parts.nonce
+            SyncNonce.digest == _nonce_digest(call.space, call.parts.nonce)
         )
     )
-    return expires is not None and expires >= call.now
+    if expires is not None and expires >= call.now:
+        raise RefusedError(401, "replay")
 
 
-async def _use_nonce(session: AsyncSession, call: Call) -> None:
+async def _use_nonce(session: AsyncSession, state: GroupSync, call: Call) -> None:
     """Record the request's nonce, refusing one this space has seen within the clock window.
 
     One statement, so two copies of a request racing on two instances cannot both pass: the
-    second waits for the first's transaction and then finds the row. The row is kept until
-    the request could no longer pass the clock check.
+    second waits for the first's transaction and then finds the row. The clock is read again
+    first: however long the request took to get here (a slow object store, a wait for a
+    lock), its nonce is only written while it is still inside its window, and nonces are
+    swept a minute after they run out, so a sweep never clears the way for a copy.
     """
+    now = state.clock()
+    if abs(now - int(call.parts.time)) > CLOCK_WINDOW_MS:
+        raise RefusedError(401, "clock")
     insert = insert_for(session)
     statement = insert(SyncNonce).values(
-        space_id=call.space,
-        nonce=call.parts.nonce,
+        digest=_nonce_digest(call.space, call.parts.nonce),
         expires_at=int(call.parts.time) + CLOCK_WINDOW_MS + 1,
     )
     written = await session.execute(
         statement.on_conflict_do_update(
-            index_elements=[SyncNonce.space_id, SyncNonce.nonce],
+            index_elements=[SyncNonce.digest],
             set_={"expires_at": statement.excluded.expires_at},
             # Only over a row that has run out and not been swept yet.
-            where=SyncNonce.expires_at < call.now,
-        ).returning(SyncNonce.nonce)
+            where=SyncNonce.expires_at < now,
+        ).returning(SyncNonce.digest)
     )
     if written.first() is None:
         raise RefusedError(401, "replay")
@@ -242,9 +325,10 @@ async def create(session: AsyncSession, state: GroupSync, call: Call) -> Answer:
     """The owner makes the space with their licence; they are its first member."""
     if await _space(session, call.space) is not None:
         raise RefusedError(409, "exists")
+    await _refuse_replay(session, call)
     valid_until = _check_licence(state, call)
     _limit(state.requests, call)
-    await _use_nonce(session, call)
+    await _use_nonce(session, state, call)
     insert = insert_for(session)
     made = await session.execute(
         insert(SyncSpace)
@@ -257,7 +341,9 @@ async def create(session: AsyncSession, state: GroupSync, call: Call) -> Answer:
         await session.rollback()
         raise RefusedError(409, "exists")
     await session.execute(
-        insert(SyncMember).values(space_id=call.space, key=call.signer, added_at=call.now, acked=0)
+        insert(SyncMember).values(
+            space_id=call.space, key=call.signer, added_at=call.now, acked=0, served=0
+        )
     )
     await session.commit()
     log.info("sync.space_created")
@@ -265,9 +351,10 @@ async def create(session: AsyncSession, state: GroupSync, call: Call) -> Answer:
 
 
 async def status(session: AsyncSession, state: GroupSync, call: Call) -> Answer:
-    space = await _member_space(session, call)
+    space, _ = await _member_space(session, call)
+    await _refuse_replay(session, call)
     _limit(state.requests, call)
-    await _use_nonce(session, call)
+    await _use_nonce(session, state, call)
     members = list(
         await session.scalars(
             select(SyncMember.key)
@@ -291,10 +378,11 @@ async def status(session: AsyncSession, state: GroupSync, call: Call) -> Answer:
 async def renew(session: AsyncSession, state: GroupSync, call: Call) -> Answer:
     """The owner sends a new licence. "Valid until" only ever moves forward."""
     await _owner_space(session, call)
+    await _refuse_replay(session, call)
     valid_until = _check_licence(state, call)
     _limit(state.requests, call)
     space = await _owner_space(session, call, lock=True)
-    await _use_nonce(session, call)
+    await _use_nonce(session, state, call)
     if valid_until > space.valid_until:
         await session.execute(
             update(SyncSpace).where(SyncSpace.id == call.space).values(valid_until=valid_until)
@@ -306,12 +394,13 @@ async def renew(session: AsyncSession, state: GroupSync, call: Call) -> Answer:
 
 async def add_member(session: AsyncSession, state: GroupSync, call: Call, key: str) -> Answer:
     await _owner_space(session, call)
+    await _refuse_replay(session, call)
     _limit(state.requests, call)
     space = await _owner_space(session, call, lock=True)
     if await _is_member(session, call.space, key):
         # Nothing to add, read-only or not: the owner's phone sends its whole member list
         # on every sync, and must still get through to pull once the licence has run out.
-        await _use_nonce(session, call)
+        await _use_nonce(session, state, call)
         await session.commit()
         return Answer(200, {"added": False})
     if space.valid_until <= call.now:
@@ -325,7 +414,7 @@ async def add_member(session: AsyncSession, state: GroupSync, call: Call, key: s
     ).one()
     if count >= MAX_MEMBERS:
         raise RefusedError(409, "space_full")
-    await _use_nonce(session, call)
+    await _use_nonce(session, state, call)
     # A new member starts at the latest cursor: older batches were sealed to the others, and
     # the owner's phone sends them what they need. Members are listed in the order they were
     # added, so two added in the same millisecond still get different times.
@@ -335,6 +424,7 @@ async def add_member(session: AsyncSession, state: GroupSync, call: Call, key: s
             key=key,
             added_at=max(call.now, (newest or 0) + 1),
             acked=space.last_cursor,
+            served=space.last_cursor,
         )
     )
     await session.commit()
@@ -345,11 +435,12 @@ async def add_member(session: AsyncSession, state: GroupSync, call: Call, key: s
 async def remove_member(session: AsyncSession, state: GroupSync, call: Call, key: str) -> Answer:
     """Allowed even when read-only: the owner can always take someone out."""
     await _owner_space(session, call)
+    await _refuse_replay(session, call)
     if key == call.signer:
         raise RefusedError(409, "owner_stays")
     _limit(state.requests, call)
     await _owner_space(session, call, lock=True)
-    await _use_nonce(session, call)
+    await _use_nonce(session, state, call)
     await session.execute(
         delete(SyncMember).where(SyncMember.space_id == call.space, SyncMember.key == key)
     )
@@ -359,22 +450,27 @@ async def remove_member(session: AsyncSession, state: GroupSync, call: Call, key
 
 
 async def remove(session: AsyncSession, store: BlobStore, state: GroupSync, call: Call) -> Answer:
-    """The owner deletes the space: every row of it, and every object.
+    """The owner deletes the space: every row that names it, and every object.
 
     The objects are queued for deletion in the transaction that removes the rows, then
     deleted straight away. Any the store does not delete now stays queued and is retried by
     ``ngome-purge``, as for backups.
+
+    The nonces the space's requests used stay until they run out, this request's among them.
+    They are digests, so they do not name the space; they are what refuses a copy of this
+    delete, or of anything sent before it, if the owner makes the space again.
     """
     await _owner_space(session, call)
+    await _refuse_replay(session, call)
     _limit(state.requests, call)
     await _owner_space(session, call, lock=True)
+    await _use_nonce(session, state, call)
     keys = list(
         await session.scalars(select(SyncBatch.object_key).where(SyncBatch.space_id == call.space))
     )
     await _queue_objects(session, keys)
     await session.execute(delete(SyncBatch).where(SyncBatch.space_id == call.space))
     await session.execute(delete(SyncMember).where(SyncMember.space_id == call.space))
-    await session.execute(delete(SyncNonce).where(SyncNonce.space_id == call.space))
     await session.execute(delete(SyncSpace).where(SyncSpace.id == call.space))
     await session.commit()
     deleted, left = await _delete_objects(session, store, keys, seconds=DELETE_NOW_SECONDS)
@@ -403,13 +499,17 @@ async def _batch_by_id(
 
 
 async def _same_batch(
-    session: AsyncSession, call: Call, existing: tuple[int, str, str], digest: str
+    session: AsyncSession,
+    state: GroupSync,
+    call: Call,
+    existing: tuple[int, str, str],
+    digest: str,
 ) -> Answer:
     """The batch id is already there: the same sender and bytes get the same cursor again."""
     cursor, author, stored_digest = existing
     if author != call.signer or stored_digest != digest:
         raise RefusedError(409, "batch_id_taken")
-    await _use_nonce(session, call)
+    await _use_nonce(session, state, call)
     await session.commit()
     return Answer(200, {"cursor": cursor, "duplicate": True})
 
@@ -423,8 +523,10 @@ async def push(
     batch_id: str | None,
     to: str | None,
 ) -> Answer:
-    """Store one batch. The body is the padded ciphertext; it is never opened."""
-    space = await _member_space(session, call)
+    """Store one batch. The body is the padded file from the phone; it is never opened."""
+    space, _ = await _member_space(session, call)
+    # Before the limits and before the headers the signature does not cover are looked at.
+    await _refuse_replay(session, call)
     _limit(state.requests, call)
     if space.valid_until <= call.now:
         raise RefusedError(403, "read_only")
@@ -439,11 +541,9 @@ async def push(
 
     existing = await _batch_by_id(session, call.space, batch_id)
     if existing is not None:
-        answer = await _same_batch(session, call, existing, digest)
+        answer = await _same_batch(session, state, call, existing, digest)
         log.info("sync.pushed", size_bytes=len(call.body), duplicate=True)
         return answer
-    if await _nonce_seen(session, call):
-        raise RefusedError(401, "replay")
 
     # Note the object, then write it, with no transaction held open meanwhile.
     object_key = f"sync/{secrets.token_hex(16)}"
@@ -453,7 +553,7 @@ async def push(
     await session.commit()
     try:
         await store.put(object_key, _one_chunk(call.body))
-        answer = await _record_push(session, call, batch_id, to, digest, object_key)
+        answer = await _record_push(session, state, call, batch_id, to, digest, object_key)
     except BaseException:
         await session.rollback()
         await _discard(session, store, object_key)
@@ -466,18 +566,24 @@ async def push(
 
 
 async def _record_push(
-    session: AsyncSession, call: Call, batch_id: str, to: str | None, digest: str, object_key: str
+    session: AsyncSession,
+    state: GroupSync,
+    call: Call,
+    batch_id: str,
+    to: str | None,
+    digest: str,
+    object_key: str,
 ) -> Answer:
     """With the space locked: check again, take the next cursor and add the batch's row."""
-    space = await _member_space(session, call, lock=True)
+    space, _ = await _member_space(session, call, lock=True)
     if space.valid_until <= call.now:
         raise RefusedError(403, "read_only")
     if to is not None and not await _is_member(session, call.space, to):
         raise RefusedError(400, "bad_recipient")
     existing = await _batch_by_id(session, call.space, batch_id)
     if existing is not None:
-        return await _same_batch(session, call, existing, digest)
-    await _use_nonce(session, call)
+        return await _same_batch(session, state, call, existing, digest)
+    await _use_nonce(session, state, call)
     cleared = await session.execute(
         delete(SyncPendingBlob)
         .where(SyncPendingBlob.object_key == object_key)
@@ -531,27 +637,49 @@ def parse_since(raw: str | None) -> int:
     return int(raw)
 
 
+async def _batch_is_there(session: AsyncSession, space_id: str, cursor: int) -> bool:
+    found = await session.scalar(
+        select(SyncBatch.cursor).where(SyncBatch.space_id == space_id, SyncBatch.cursor == cursor)
+    )
+    await session.commit()  # only a read: nothing is held open while objects are fetched
+    return found is not None
+
+
 async def pull(
     session: AsyncSession, store: BlobStore, state: GroupSync, call: Call, since_text: str | None
 ) -> Answer:
     """Everything for the signer after ``since``. Asking from ``since`` also says the member
     holds everything up to it, which retention counts on."""
-    space = await _member_space(session, call)
+    space, member = await _member_space(session, call)
+    await _refuse_replay(session, call)
     since = parse_since(since_text)
     _limit(state.requests, call)
-    await _use_nonce(session, call)
-    # No further than the last cursor given out, so a made-up cursor cannot mark batches
-    # that do not exist yet as pulled.
-    holds = min(since, space.last_cursor)
-    await session.execute(
-        update(SyncMember)
-        .where(
-            SyncMember.space_id == call.space,
-            SyncMember.key == call.signer,
-            SyncMember.acked < holds,
+    await _use_nonce(session, state, call)
+    if since > member.served:
+        # No pull has ever answered this member with a cursor that high, so it is not from
+        # this space as it is now: the owner deleted the space and made it again, and the
+        # phone kept its old cursor. Start over, and take nothing as pulled on its word.
+        since = 0
+    if since > member.acked:
+        await session.execute(
+            update(SyncMember)
+            .where(
+                SyncMember.space_id == call.space,
+                SyncMember.key == call.signer,
+                SyncMember.acked < since,
+            )
+            .values(acked=since)
         )
-        .values(acked=holds)
-    )
+    if space.last_cursor > member.served:
+        await session.execute(
+            update(SyncMember)
+            .where(
+                SyncMember.space_id == call.space,
+                SyncMember.key == call.signer,
+                SyncMember.served < space.last_cursor,
+            )
+            .values(served=space.last_cursor)
+        )
     # Up to the cursor read with the space: a batch pushed after that is not skipped by the
     # jump to ``next`` below, it comes with the next pull.
     rows = (
@@ -580,14 +708,23 @@ async def pull(
     out: list[dict[str, Any]] = []
     size = 0
     reached = since
+    gap = False
     for row in rows[:PULL_MAX_BATCHES]:
         if out and size + row.size > PULL_MAX_BYTES:
             break
-        reached = row.cursor
         try:
             data = b"".join([chunk async for chunk in await store.open(row.object_key)])
         except BlobNotFoundError:
-            continue  # removed by retention after the query; never expected
+            if not await _batch_is_there(session, call.space, row.cursor):
+                # Deleted since the query above, row and object: retention, or the space.
+                reached = row.cursor
+                continue
+            if reached == since:
+                # Nothing to hand over before it. Not a skip: the phone would never get it.
+                raise ObjectMissingError from None
+            gap = True  # hand over what came before; the next pull meets the gap
+            break
+        reached = row.cursor
         size += row.size
         out.append(
             {
@@ -598,7 +735,7 @@ async def pull(
                 "data": b64url(data),
             }
         )
-    more = bool(rows) and reached < rows[-1].cursor
+    more = gap or (bool(rows) and reached < rows[-1].cursor)
     log.info("sync.pulled", batches=len(out), more=more)
     return Answer(
         200,
@@ -674,8 +811,10 @@ class SyncPurge:
 
 
 async def purge_nonces(session: AsyncSession, now_ms: int) -> int:
-    """Delete nonces whose request could no longer pass the clock check. Commits."""
-    gone = await session.execute(delete(SyncNonce).where(SyncNonce.expires_at < now_ms))
+    """Delete nonces that ran out at least a minute ago (``NONCE_SWEEP_MARGIN_MS``). Commits."""
+    gone = await session.execute(
+        delete(SyncNonce).where(SyncNonce.expires_at < now_ms - NONCE_SWEEP_MARGIN_MS)
+    )
     await session.commit()
     return cast(CursorResult[Any], gone).rowcount
 

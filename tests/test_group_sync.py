@@ -23,17 +23,21 @@ from typing import Any
 
 import httpx
 import pytest
+from alembic import command
+from alembic.config import Config
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI
 from pydantic import ValidationError
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ngome.api.app import create_app
 from ngome.auth import retention
 from ngome.core.config import Settings
+from ngome.core.ed25519 import is_small_order
 from ngome.db.migrate import upgrade_to_head
 from ngome.db.models import Base
+from ngome.db.session import create_engine, create_sessionmaker
 from ngome.groupsync import licence as licences
 from ngome.groupsync import service
 from ngome.groupsync.licence import Ed25519LicenceVerifier, LicenceResult
@@ -48,8 +52,10 @@ from ngome.groupsync.protocol import (
     b64url,
     check_signature,
     from_b64url,
+    is_key,
     is_padded_size,
     padded_size,
+    verify_ed25519,
 )
 from ngome.groupsync.ratelimit import RateLimiter
 from ngome.groupsync.retention import MIN_KEEP_MS, BatchRow, expired_batches
@@ -319,8 +325,19 @@ class Sync:
             "spaces": await self.count(SyncSpace, SyncSpace.id == space),
             "members": await self.count(SyncMember, SyncMember.space_id == space),
             "batches": await self.count(SyncBatch, SyncBatch.space_id == space),
-            "nonces": await self.count(SyncNonce, SyncNonce.space_id == space),
         }
+
+    async def named(self, space: str) -> list[str]:
+        """The sync tables with a row that names ``space`` anywhere in it."""
+        found = []
+        async with self.maker() as session:
+            for table in Base.metadata.sorted_tables:
+                if table.name.startswith("sync_"):
+                    for row in await session.execute(select(table)):
+                        if any(isinstance(value, str) and space in value for value in row):
+                            found.append(table.name)
+                            break
+        return found
 
     async def object_keys(self, space: str) -> list[str]:
         """Where each of the space's batches is stored, in cursor order."""
@@ -562,16 +579,21 @@ async def test_forged_replayed_and_stale_requests_are_refused(sync: Sync) -> Non
     assert (bad.status, bad.error) == (402, "licence_signature")
 
 
-async def test_a_replayed_push_and_a_replayed_create_are_refused(sync: Sync) -> None:
+async def test_a_copy_of_a_push_or_of_a_create_is_refused(sync: Sync) -> None:
     owner = new_member()
     space = random_id()
-    made = await sync.call(owner, "POST", f"/v1/spaces/{space}", body={"licence": sync.licence()})
+    licence_body = {"licence": sync.licence()}
+    made = await sync.call(owner, "POST", f"/v1/spaces/{space}", body=licence_body)
     assert made.status == 201
-    # The very same request again (same body, same signature): the space is there already.
-    again = await sync.call(
-        owner, "POST", f"/v1/spaces/{space}", body={"licence": sync.licence()}, reuse=made.signed
-    )
+    # A copy of the create (same body, same signature). While the space is there it is
+    # refused because the space exists; once the space is gone, because it is a copy.
+    path = f"/v1/spaces/{space}"
+    again = await sync.call(owner, "POST", path, body=licence_body, reuse=made.signed)
     assert (again.status, again.error) == (409, "exists")
+    assert (await sync.call(owner, "DELETE", path)).status == 200
+    again = await sync.call(owner, "POST", path, body=licence_body, reuse=made.signed)
+    assert (again.status, again.error) == (401, "replay")
+    assert (await sync.call(owner, "POST", path, body=licence_body)).status == 201
 
     batch = padded(1024, 5)
     headers = {**sign(owner, "POST", f"/v1/spaces/{space}/batches", batch, sync.clock.ms)}
@@ -670,7 +692,7 @@ async def test_deleting_a_space_removes_its_rows_and_its_objects(sync: Sync) -> 
     keys = await sync.object_keys(space)
     assert len(keys) == 2
     assert [len(await sync.stored(key) or b"") for key in keys] == [1024, 4096]
-    assert (await sync.rows(space))["nonces"] > 0
+    assert await sync.named(space) == ["sync_spaces", "sync_batches", "sync_members"]
 
     not_owner = await sync.call(jane, "DELETE", f"/v1/spaces/{space}")
     assert (not_owner.status, not_owner.error) == (403, "not_owner")
@@ -679,13 +701,17 @@ async def test_deleting_a_space_removes_its_rows_and_its_objects(sync: Sync) -> 
 
     assert [await sync.stored(key) for key in keys] == [None, None]
     assert await sync.count(BlobDeletion, BlobDeletion.object_key.in_(keys)) == 0
-    assert await sync.rows(space) == {"spaces": 0, "members": 0, "batches": 0, "nonces": 0}
+    assert await sync.rows(space) == {"spaces": 0, "members": 0, "batches": 0}
     assert await sync.count(SyncPendingBlob) == 0
+    # The nonces its requests used stay until they run out (a copy of an old request must
+    # still be refused if the space is made again), but as digests: no row names the space.
+    assert await sync.count(SyncNonce) == 6
+    assert await sync.named(space) == []
     for member in (jane, owner):
         missing = await sync.pull(member, space)
         assert (missing.status, missing.error) == (404, "not_found")
 
-    # The id can be used again from scratch: nothing of the old space is left.
+    # The id can be used again from scratch: nothing of the old space is left to it.
     again = await sync.call(
         owner, "POST", f"/v1/spaces/{space}", body={"licence": sync.licence(DAY_MS)}
     )
@@ -932,7 +958,7 @@ def test_sync_tables_link_to_no_account() -> None:
     }
     assert columns == {
         "sync_spaces": {"id", "owner_key", "valid_until", "last_cursor"},
-        "sync_members": {"space_id", "key", "added_at", "acked"},
+        "sync_members": {"space_id", "key", "added_at", "acked", "served"},
         "sync_batches": {
             "space_id",
             "cursor",
@@ -944,7 +970,7 @@ def test_sync_tables_link_to_no_account() -> None:
             "at",
             "object_key",
         },
-        "sync_nonces": {"space_id", "nonce", "expires_at"},
+        "sync_nonces": {"digest", "expires_at"},
         "sync_pending_blobs": {"object_key", "created_at"},
     }
     for name in columns:
@@ -1116,6 +1142,7 @@ async def test_the_purge_deletes_batches_everyone_has_pulled_once_they_are_old(
     # Jane has pulled everything. Otieno has only pulled past the first batch.
     seen = await sync.pull(jane, space)
     await sync.pull(jane, space, seen.data["next"])
+    await sync.pull(otieno, space)
     await sync.pull(otieno, space, 1)
 
     # Read, but not yet 90 days old: nothing goes.
@@ -1154,7 +1181,7 @@ async def test_the_purge_clears_old_nonces_and_objects_left_by_dead_pushes(sync:
     owner = new_member()
     space = await sync.new_space(owner)
     await sync.pull(owner, space)
-    assert await sync.count(SyncNonce, SyncNonce.space_id == space) == 2
+    assert await sync.count(SyncNonce) == 2
 
     # A push that died after writing its object: the note is there, the row is not.
     async def one_chunk() -> AsyncIterator[bytes]:
@@ -1173,21 +1200,35 @@ async def test_the_purge_clears_old_nonces_and_objects_left_by_dead_pushes(sync:
 
     late = await _purge(sync, days=1)
     assert (late.sync_nonces, late.sync_orphans) == (2, 1)
-    assert await sync.count(SyncNonce, SyncNonce.space_id == space) == 0
+    assert await sync.count(SyncNonce) == 0
     assert await sync.count(SyncPendingBlob) == 0
     assert await sync.stored(dead) is None
 
 
-async def test_an_instance_sweeps_old_nonces_as_it_serves(sync: Sync) -> None:
+async def test_an_instance_sweeps_nonces_a_minute_after_they_run_out(sync: Sync) -> None:
     owner = new_member()
     space = await sync.new_space(owner)
     for _ in range(3):
         await sync.pull(owner, space)
-    assert await sync.count(SyncNonce, SyncNonce.space_id == space) == 4
-    # Eleven minutes on, none of those requests could pass the clock check any more.
-    sync.clock.ms += 11 * 60_000
+    assert await sync.count(SyncNonce) == 4
+    # Half a minute after those four ran out they are still kept: a copy of one of the
+    # requests, opened in time, could still be on its way through.
+    sync.clock.ms += CLOCK_WINDOW_MS + 30_000
     assert (await sync.pull(owner, space)).status == 200
-    assert await sync.count(SyncNonce, SyncNonce.space_id == space) == 1
+    assert await sync.count(SyncNonce) == 5
+    # Past the minute, the next sweep takes them. The two newer ones stay.
+    sync.clock.ms += 61_000
+    assert (await sync.pull(owner, space)).status == 200
+    assert await sync.count(SyncNonce) == 2
+
+
+async def test_the_purge_keeps_the_same_margin_for_nonces(sync: Sync) -> None:
+    owner = new_member()
+    await sync.new_space(owner)
+    half_a_minute_past = sync.clock.ms + CLOCK_WINDOW_MS + 30_000
+    async with sync.maker() as session:
+        assert await service.purge_nonces(session, half_a_minute_past) == 0
+        assert await service.purge_nonces(session, half_a_minute_past + 31_000) == 1
 
 
 # ---------------------------------------------------------------- several instances
@@ -1290,6 +1331,78 @@ async def test_two_owners_making_the_same_space_at_once_make_it_once(make_sync: 
     assert sorted(m.status for m in made) == [201, 409]
     assert await one.count(SyncSpace, SyncSpace.id == space) == 1
     assert await one.count(SyncMember, SyncMember.space_id == space) == 1
+
+
+@postgres_only
+async def test_one_delete_sent_to_two_instances_at_once_deletes_once(make_sync: MakeSync) -> None:
+    one = await make_sync()
+    two = await make_sync()
+    owner = new_member()
+    space = await one.new_space(owner)
+    await one.push(owner, space, padded(1024))
+    path = f"/v1/spaces/{space}"
+    signed = sign(owner, "DELETE", path, b"", one.clock.ms)
+    answers = await asyncio.gather(
+        one.client.delete(path, headers=signed), two.client.delete(path, headers=signed)
+    )
+    assert sorted(a.status_code for a in answers) == [200, 404]
+    assert await one.rows(space) == {"spaces": 0, "members": 0, "batches": 0}
+    # The owner makes the space again: the copy of the delete does not take it away.
+    assert (await one.call(owner, "POST", path, body={"licence": one.licence()})).status == 201
+    copy = await two.client.delete(path, headers=signed)
+    assert (copy.status_code, copy.json()) == (401, {"error": "replay"})
+
+
+@postgres_only
+async def test_a_member_following_next_misses_nothing_while_others_push(
+    make_sync: MakeSync,
+) -> None:
+    limits = {
+        "group_sync_key_pushes_per_minute": 10_000,
+        "group_sync_key_requests_per_minute": 10_000,
+        "group_sync_address_requests_per_minute": 100_000,
+    }
+    one = await make_sync(**limits)
+    two = await make_sync(**limits)
+    owner, jane, otieno = new_member(), new_member(), new_member()
+    space = await one.new_space(owner)
+    await one.add(owner, space, jane)
+    await one.add(owner, space, otieno)
+    total = 96
+    done = asyncio.Event()
+
+    async def push_all() -> list[int]:
+        async def one_push(n: int) -> int:
+            sender = owner if n % 3 else otieno
+            pushed = await (one if n % 2 else two).push(
+                sender, space, padded(1024, n % 250), to=jane.key if n % 2 else None
+            )
+            assert pushed.status == 201, pushed.data
+            cursor: int = pushed.data["cursor"]
+            return cursor
+
+        cursors: list[int] = []
+        for start in range(0, total, 12):
+            cursors += await asyncio.gather(*(one_push(n) for n in range(start, start + 12)))
+        done.set()
+        return cursors
+
+    async def pull_all() -> list[int]:
+        got: list[int] = []
+        cursor = 0
+        while True:
+            finished = done.is_set()
+            pulled = await two.pull(jane, space, cursor)
+            assert pulled.status == 200, pulled.data
+            got += [b["cursor"] for b in pulled.data["batches"]]
+            assert pulled.data["next"] >= cursor
+            cursor = pulled.data["next"]
+            if finished and not pulled.data["more"]:
+                return got
+
+    cursors, got = await asyncio.gather(push_all(), pull_all())
+    assert sorted(cursors) == list(range(1, total + 1))
+    assert got == list(range(1, total + 1))  # every batch here is one Jane reads
 
 
 # ---------------------------------------------------------------- object storage
@@ -1404,3 +1517,618 @@ def test_the_licence_command_makes_a_pair_and_mints_without_showing_the_private_
     monkeypatch.delenv(licences.SEED_ENV)
     with pytest.raises(SystemExit, match="--key-file"):
         licences.main(["mint"])
+
+
+# ---------------------------------------------------------------- replays, timing and care
+# From the review of the pull request: each of these failed before its fix.
+
+
+async def _raw_http(
+    app: FastAPI,
+    method: str,
+    path: str,
+    headers: dict[str, str],
+    messages: list[dict[str, Any]],
+) -> tuple[int | None, bytes]:
+    """Drive the app as an HTTP server would, with full say over headers and body events."""
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(k.encode("latin-1"), v.encode("latin-1")) for k, v in headers.items()],
+        "client": ("203.0.113.9", 1),
+        "server": ("test", 80),
+        "state": {},
+    }
+    waiting = list(messages)
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return waiting.pop(0) if waiting else {"type": "http.disconnect"}
+
+    async def send(message: Any) -> None:
+        sent.append(dict(message))
+
+    await app(scope, receive, send)
+    status = next((m["status"] for m in sent if m["type"] == "http.response.start"), None)
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return status, body
+
+
+async def test_a_request_is_timed_when_its_body_has_arrived_not_when_it_starts(
+    sync: Sync,
+) -> None:
+    """A copy of a request, opened inside the clock window with its body held back until
+    the nonce has been swept, must not get in."""
+    owner = new_member()
+    space = await sync.new_space(owner)
+    path = f"/v1/spaces/{space}/batches"
+    batch = padded(1024, 9)
+    start = sync.clock.ms
+    captured = sign(owner, "POST", path, batch, start)
+
+    async def send(body: Any) -> httpx.Response:
+        headers = {**captured, "x-pc-batch": random_id()}
+        return await sync.client.post(path, content=body, headers=headers)
+
+    assert (await send(batch)).status_code == 201
+    assert (await send(batch)).json() == {"error": "replay"}
+
+    release = asyncio.Event()
+
+    async def held_body() -> AsyncIterator[bytes]:
+        await release.wait()
+        yield batch
+
+    # Opened a second before the window closes.
+    sync.clock.ms = start + CLOCK_WINDOW_MS - 1000
+    held = asyncio.create_task(send(held_body()))
+    await asyncio.sleep(0.3)
+    assert not held.done()
+    # Two minutes on. Any signed request makes the instance sweep old nonces.
+    sync.clock.ms = start + CLOCK_WINDOW_MS + 121_000
+    assert (await sync.pull(new_member(), random_id())).status == 404
+    release.set()
+    answer = await held
+    assert (answer.status_code, answer.json()) == (401, {"error": "clock"})
+    assert await sync.count(SyncBatch, SyncBatch.space_id == space) == 1
+
+
+async def test_a_request_without_a_body_held_open_is_timed_when_it_ends(sync: Sync) -> None:
+    owner, jane = new_member(), new_member()
+    space = await sync.new_space(owner)
+    assert (await sync.add(owner, space, jane)).status == 201
+    start = sync.clock.ms
+    removed = await sync.call(owner, "DELETE", f"/v1/spaces/{space}/members/{jane.key}")
+    assert removed.status == 200
+    # The owner changes their mind and adds Jane back.
+    assert (await sync.add(owner, space, jane)).status == 201
+
+    release = asyncio.Event()
+
+    async def empty_but_late() -> AsyncIterator[bytes]:
+        await release.wait()
+        return
+        yield b""  # pragma: no cover
+
+    sync.clock.ms = start + CLOCK_WINDOW_MS - 1000
+    held = asyncio.create_task(
+        sync.client.request(
+            "DELETE",
+            f"/v1/spaces/{space}/members/{jane.key}",
+            content=empty_but_late(),
+            headers=removed.signed,
+        )
+    )
+    await asyncio.sleep(0.3)
+    sync.clock.ms = start + CLOCK_WINDOW_MS + 121_000
+    assert (await sync.pull(new_member(), random_id())).status == 404
+    release.set()
+    answer = await held
+    assert (answer.status_code, answer.json()) == (401, {"error": "clock"})
+    assert (await sync.pull(jane, space)).status == 200
+
+
+async def test_a_body_that_does_not_arrive_in_time_is_refused(sync: Sync) -> None:
+    sync.app.state.group_sync.body_seconds = 0.2
+    owner = new_member()
+    space = await sync.new_space(owner)
+    path = f"/v1/spaces/{space}/batches"
+    never = asyncio.Event()
+
+    async def stalled() -> AsyncIterator[bytes]:
+        yield padded(512)
+        await never.wait()
+        yield padded(512)
+
+    signed = sign(owner, "POST", path, padded(1024), sync.clock.ms)
+    answer = await asyncio.wait_for(
+        sync.client.post(path, content=stalled(), headers={**signed, "x-pc-batch": random_id()}),
+        timeout=5,
+    )
+    assert (answer.status_code, answer.json()) == (408, {"error": "too_slow"})
+    assert await sync.count(SyncBatch, SyncBatch.space_id == space) == 0
+    never.set()
+
+
+async def test_a_request_that_cannot_pass_is_refused_without_waiting_for_its_body(
+    sync: Sync,
+) -> None:
+    owner = new_member()
+    space = await sync.new_space(owner)
+    path = f"/v1/spaces/{space}/batches"
+    never = asyncio.Event()
+
+    async def held() -> AsyncIterator[bytes]:
+        yield padded(512)
+        await never.wait()
+        yield padded(512)
+
+    # No signature at all, and one made ten minutes ago: neither needs the body to refuse.
+    stale = sign(owner, "POST", path, padded(1024), sync.clock.ms - 600_000)
+    for headers, error in (({}, "unauthorized"), (stale, "clock")):
+        answer = await asyncio.wait_for(
+            sync.client.post(path, content=held(), headers=headers), timeout=5
+        )
+        assert (answer.status_code, answer.json()) == (401, {"error": error})
+    never.set()
+
+
+async def test_a_push_that_leaves_its_window_while_it_is_stored_is_refused(sync: Sync) -> None:
+    """The window is looked at again when the nonce is written, however long the work took."""
+    owner = new_member()
+    space = await sync.new_space(owner)
+    working = sync.app.state.blob_store
+    clock = sync.clock
+    stored: list[str] = []
+
+    class Slow:
+        async def put(self, key: str, chunks: Any) -> None:
+            await working.put(key, chunks)
+            stored.append(key)
+            clock.ms += CLOCK_WINDOW_MS + 1000  # six minutes go by while the object is written
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(working, name)
+
+    sync.app.state.blob_store = Slow()
+    try:
+        late = await sync.push(owner, space, padded(1024))
+    finally:
+        sync.app.state.blob_store = working
+    assert (late.status, late.error) == (401, "clock")
+    assert await sync.count(SyncBatch, SyncBatch.space_id == space) == 0
+    assert await sync.count(SyncPendingBlob) == 0
+    assert [await sync.stored(key) for key in stored] == [None]
+
+
+async def test_a_captured_request_stays_refused_after_the_space_is_deleted_and_made_again(
+    sync: Sync,
+) -> None:
+    owner, jane, mallory = new_member(), new_member(), new_member()
+    space = random_id()
+    path = f"/v1/spaces/{space}"
+    licence_body = {"licence": sync.licence()}
+    made = await sync.call(owner, "POST", path, body=licence_body)
+    assert made.status == 201
+    add_mallory = await sync.add(owner, space, mallory)
+    assert add_mallory.status == 201
+    kicked = await sync.call(owner, "DELETE", f"{path}/members/{mallory.key}")
+    assert kicked.status == 200
+    deleted = await sync.call(owner, "DELETE", path)
+    assert deleted.status == 200
+
+    # A copy of the owner's own create would make the deleted space again.
+    remade = await sync.call(owner, "POST", path, body=licence_body, reuse=made.signed)
+    assert (remade.status, remade.error) == (401, "replay")
+    assert await sync.count(SyncSpace, SyncSpace.id == space) == 0
+
+    # The owner turns sync on again a minute later; the app uses the same space id.
+    sync.clock.ms += 60_000
+    assert (await sync.call(owner, "POST", path, body=licence_body)).status == 201
+    assert (await sync.add(owner, space, jane)).status == 201
+    assert (await sync.push(owner, space, padded(1024), to=jane.key)).status == 201
+
+    # Copies of requests from before the delete, all still inside their five minutes.
+    back = await sync.call(owner, "PUT", f"{path}/members/{mallory.key}", reuse=add_mallory.signed)
+    assert (back.status, back.error) == (401, "replay")
+    assert (await sync.pull(mallory, space)).error == "not_member"
+    again = await sync.call(owner, "DELETE", path, reuse=deleted.signed)
+    assert (again.status, again.error) == (401, "replay")
+    assert await sync.count(SyncSpace, SyncSpace.id == space) == 1
+    assert await sync.count(SyncBatch, SyncBatch.space_id == space) == 1
+
+
+async def test_a_replay_does_not_spend_the_members_allowance(make_sync: MakeSync) -> None:
+    sync = await make_sync(group_sync_key_requests_per_minute=5, group_sync_key_pushes_per_minute=3)
+    owner = new_member()
+    space = await sync.new_space(owner)  # the owner's first request
+    once = await sync.pull(owner, space)  # the second
+    assert once.status == 200
+    elsewhere = {"x-forwarded-for": "198.51.100.23"}  # whoever copied it, from their address
+    pull_path = f"/v1/spaces/{space}/batches?since=0"
+    replies = [
+        (await sync.call(owner, "GET", pull_path, reuse=once.signed, headers=elsewhere)).error
+        for _ in range(6)
+    ]
+    assert replies == ["replay"] * 6
+    # The member is not held back by them.
+    assert (await sync.pull(owner, space)).status == 200
+
+    path = f"/v1/spaces/{space}/batches"
+    batch = padded(1024)
+    captured = sign(owner, "POST", path, batch, sync.clock.ms)
+    for expected in (201, 401, 401, 401, 401):
+        headers = {**captured, "x-pc-batch": random_id()}
+        copy = await sync.client.post(path, content=batch, headers=headers)
+        assert copy.status_code == expected
+    # One push of three is used; the copies took none.
+    assert (await sync.push(owner, space, padded(1024))).status == 201
+
+
+async def test_a_replay_learns_nothing_from_the_headers_that_are_not_signed(sync: Sync) -> None:
+    owner, jane, stranger = new_member(), new_member(), new_member()
+    space = await sync.new_space(owner)
+    await sync.add(owner, space, jane)
+    janes_batch = random_id()
+    assert (await sync.push(jane, space, padded(1024, 3), batch_id=janes_batch)).status == 201
+
+    path = f"/v1/spaces/{space}/batches"
+    batch = padded(1024, 1)
+    captured = sign(owner, "POST", path, batch, sync.clock.ms)
+    first = await sync.client.post(
+        path, content=batch, headers={**captured, "x-pc-batch": random_id()}
+    )
+    assert first.status_code == 201
+
+    # X-PC-To and X-PC-Batch are outside the signature. A copy of the push must get the same
+    # answer whatever they say: not who is a member, nor which batch ids are taken.
+    for extra in (
+        {"x-pc-batch": random_id(), "x-pc-to": jane.key},
+        {"x-pc-batch": random_id(), "x-pc-to": stranger.key},
+        {"x-pc-batch": janes_batch},
+        {"x-pc-batch": "short"},
+        {"x-pc-batch": random_id()},
+    ):
+        copy = await sync.client.post(path, content=batch, headers={**captured, **extra})
+        assert (copy.status_code, copy.json()) == (401, {"error": "replay"}), extra
+
+
+async def test_a_cursor_from_before_the_space_was_deleted_and_made_again_starts_over(
+    sync: Sync,
+) -> None:
+    owner, jane = new_member(), new_member()
+    space = random_id()
+    path = f"/v1/spaces/{space}"
+    licence_body = {"licence": sync.licence()}
+
+    async def remake(batches: int) -> None:
+        assert (await sync.call(owner, "DELETE", path)).status == 200
+        assert (await sync.call(owner, "POST", path, body=licence_body)).status == 201
+        assert (await sync.add(owner, space, jane)).status == 201
+        for n in range(batches):
+            pushed = await sync.push(owner, space, padded(1024, 50 + n), to=jane.key)
+            assert pushed.data["cursor"] == n + 1
+
+    assert (await sync.call(owner, "POST", path, body=licence_body)).status == 201
+    await sync.add(owner, space, jane)
+    for n in range(3):
+        assert (await sync.push(owner, space, padded(1024, n), to=jane.key)).status == 201
+    assert (await sync.pull(jane, space)).data["next"] == 3  # Jane's phone keeps 3
+
+    # The owner turns sync off and on again; Jane's phone did not sync in between. Its old
+    # cursor is past anything the new space has given out: she gets everything, and the
+    # cursor her phone keeps next is the new space's.
+    await remake(batches=2)
+    pulled = await sync.pull(jane, space, since=3)
+    assert [b["cursor"] for b in pulled.data["batches"]] == [1, 2]
+    assert (pulled.data["next"], pulled.data["more"]) == (2, False)
+    assert (await sync.pull(jane, space, since=2)).data["batches"] == []
+
+    # The same when the new space has already passed her old cursor: it is still one this
+    # space never gave her.
+    await remake(batches=5)
+    pulled = await sync.pull(jane, space, since=2)
+    assert [b["cursor"] for b in pulled.data["batches"]] == [1, 2, 3, 4, 5]
+    assert pulled.data["next"] == 5
+    # A made-up cursor marks nothing as pulled, so retention keeps what she has not had.
+    await remake(batches=2)
+    await sync.pull(jane, space, since=1_000_000)
+    async with sync.maker() as session:
+        acked = await session.scalar(
+            select(SyncMember.acked).where(SyncMember.space_id == space, SyncMember.key == jane.key)
+        )
+    assert acked == 0
+
+
+async def test_a_batch_whose_object_is_missing_is_not_skipped(sync: Sync) -> None:
+    owner, jane = new_member(), new_member()
+    space = await sync.new_space(owner)
+    await sync.add(owner, space, jane)
+    for n in range(3):
+        assert (await sync.push(owner, space, padded(1024, n), to=jane.key)).status == 201
+    keys = await sync.object_keys(space)
+    lost = await sync.stored(keys[1])
+    assert lost is not None
+    await sync.store.delete(keys[1])  # the store lost it, or the server reads another store
+
+    # What comes before the gap is delivered; the gap itself is an error, not a skip.
+    pulled = await sync.pull(jane, space)
+    assert [b["cursor"] for b in pulled.data["batches"]] == [1]
+    assert (pulled.data["next"], pulled.data["more"]) == (1, True)
+    stuck = await sync.pull(jane, space, since=1)
+    assert (stuck.status, stuck.data) == (500, {"error": "server_error"})
+    assert await sync.count(SyncBatch, SyncBatch.space_id == space) == 3
+
+    async def one_chunk() -> AsyncIterator[bytes]:
+        yield lost
+
+    await sync.store.put(keys[1], one_chunk())  # the object is back
+    rest = await sync.pull(jane, space, since=1)
+    assert [b["cursor"] for b in rest.data["batches"]] == [2, 3]
+    assert (rest.data["next"], rest.data["more"]) == (3, False)
+
+
+async def test_a_batch_deleted_while_a_pull_reads_it_is_passed_over(sync: Sync) -> None:
+    """Retention can take a batch between a pull's query and its read: row and object."""
+    owner, jane = new_member(), new_member()
+    space = await sync.new_space(owner)
+    await sync.add(owner, space, jane)
+    for n in range(3):
+        assert (await sync.push(owner, space, padded(1024, n), to=jane.key)).status == 201
+    keys = await sync.object_keys(space)
+    working = sync.app.state.blob_store
+    maker = sync.maker
+
+    class Racing:
+        async def open(self, key: str) -> Any:
+            if key == keys[1]:
+                async with maker() as session:
+                    await session.execute(delete(SyncBatch).where(SyncBatch.object_key == key))
+                    await session.commit()
+                await working.delete(key)
+            return await working.open(key)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(working, name)
+
+    sync.app.state.blob_store = Racing()
+    try:
+        pulled = await sync.pull(jane, space)
+    finally:
+        sync.app.state.blob_store = working
+    assert pulled.status == 200
+    assert [b["cursor"] for b in pulled.data["batches"]] == [1, 3]
+    assert (pulled.data["next"], pulled.data["more"]) == (3, False)
+
+
+def _downgrade(connection: Any, revision: str) -> None:
+    config = Config(str(ALEMBIC_INI))
+    config.attributes["configure_logger"] = False
+    config.attributes["connection"] = connection
+    command.downgrade(config, revision)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_undoing_the_migration_queues_every_object_for_deletion(
+    backend: str, tmp_path: Path
+) -> None:
+    url = POSTGRES_URL if backend == "postgres" else f"sqlite+aiosqlite:///{tmp_path / 'm.db'}"
+    assert url is not None
+    engine = create_engine(url)
+    key = "k" * 43
+    stored, noted, both = (f"sync/{secrets.token_hex(16)}" for _ in range(3))
+    try:
+        await upgrade_to_head(engine, ALEMBIC_INI)
+        async with create_sessionmaker(engine)() as session:
+            space = random_id()
+            session.add(SyncSpace(id=space, owner_key=key, valid_until=1, last_cursor=1))
+            await session.flush()
+            session.add(
+                SyncBatch(
+                    space_id=space,
+                    cursor=1,
+                    batch_id=random_id(),
+                    author=key,
+                    recipient=None,
+                    size=1024,
+                    hash="h" * 43,
+                    at=1,
+                    object_key=stored,
+                )
+            )
+            session.add_all(SyncPendingBlob(object_key=k, created_at=1) for k in (noted, both))
+            session.add(BlobDeletion(object_key=both))  # queued already: not queued twice
+            await session.commit()
+
+        async with engine.begin() as connection:
+            await connection.run_sync(_downgrade, "0008")
+
+        async with engine.connect() as connection:
+            tables = await connection.run_sync(lambda c: inspect(c).get_table_names())
+            queued = set(
+                await connection.scalars(
+                    select(BlobDeletion.object_key).where(
+                        BlobDeletion.object_key.in_([stored, noted, both])
+                    )
+                )
+            )
+        assert not [name for name in tables if name.startswith("sync_")]
+        assert queued == {stored, noted, both}
+    finally:
+        async with create_sessionmaker(engine)() as session:
+            await session.execute(
+                delete(BlobDeletion).where(BlobDeletion.object_key.in_([stored, noted, both]))
+            )
+            await session.commit()
+        await upgrade_to_head(engine, ALEMBIC_INI)
+        await engine.dispose()
+
+
+# The eight points of small order on Ed25519, worked out from the curve rather than copied.
+_P = 2**255 - 19
+_D = (-121665 * pow(121666, -1, _P)) % _P
+
+
+def _point(raw: bytes) -> tuple[int, int] | None:
+    """Decode as a lenient verifier does: any y below 2^255, either sign."""
+    y = (int.from_bytes(raw, "little") & ((1 << 255) - 1)) % _P
+    u, v = (y * y - 1) % _P, (_D * y * y + 1) % _P
+    x = (u * pow(v, 3, _P) * pow(u * pow(v, 7, _P), (_P - 5) // 8, _P)) % _P
+    if (v * x * x - u) % _P != 0:
+        if (v * x * x + u) % _P != 0:
+            return None
+        x = (x * pow(2, (_P - 1) // 4, _P)) % _P
+    return (x if x % 2 == raw[31] >> 7 else (_P - x) % _P, y)
+
+
+def _times_eight(point: tuple[int, int]) -> tuple[int, int]:
+    x, y = point
+    for _ in range(3):
+        t = _D * x * x * y * y % _P
+        x, y = (2 * x * y) * pow(1 + t, -1, _P) % _P, (y * y + x * x) * pow(1 - t, -1, _P) % _P
+    return x, y
+
+
+def _small_order_encodings() -> list[bytes]:
+    order_eight = int.from_bytes(
+        bytes.fromhex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"), "little"
+    )
+    encodings = []
+    for y in (0, 1, _P - 1, order_eight, _P - order_eight):
+        for spelt in (y, y + _P):  # the second is the same y, not reduced
+            if spelt < 2**255:
+                for sign in (0, 1):
+                    encodings.append((spelt | sign << 255).to_bytes(32, "little"))
+    return encodings
+
+
+def test_keys_of_small_order_are_refused(tmp_path: Path) -> None:
+    """Such a key "signs" anything: with the identity as the key, the identity and zero are
+    a valid signature over every message."""
+    encodings = _small_order_encodings()
+    assert len(encodings) == 14
+    for raw in encodings:
+        point = _point(raw)
+        assert point is not None
+        assert _times_eight(point) == (0, 1)
+        assert is_small_order(raw)
+        assert not is_key(b64url(raw))
+        with pytest.raises(ValidationError, match="licence_public_key"):
+            make_settings(tmp_path, licence_public_key=b64url(raw))
+        with pytest.raises(ValidationError, match="licence_public_key"):
+            make_settings(tmp_path, licence_public_key=base64.b64encode(raw).decode())
+
+    identity = bytes([1]) + bytes(31)
+    forged = b64url(identity + bytes(32))
+    assert not verify_ed25519(b64url(identity), b"anything at all", forged)
+    now = service.wall_clock_ms()
+    parts = SignedParts(key=b64url(identity), time=str(now), nonce=random_id(), sig=forged)
+    assert check_signature(parts, "GET", "/v1/spaces/x", b"", now) == "malformed"
+    licence_text = "pclic.1." + b64url(b'{"v":1,"exp":9999999999999,"features":["group-sync"]}')
+    forged_licence = f"{licence_text}.{forged}"
+    assert Ed25519LicenceVerifier(b64url(identity)).verify(forged_licence, now) == LicenceResult(
+        why="signature"
+    )
+
+    # Real keys are untouched.
+    member = new_member()
+    assert is_key(member.key)
+    assert not is_small_order(from_b64url(member.key))
+
+
+async def test_a_key_of_small_order_cannot_sign_a_request_or_be_made_a_member(sync: Sync) -> None:
+    owner = new_member()
+    space = await sync.new_space(owner)
+    identity = b64url(bytes([1]) + bytes(31))
+    forged = {
+        "x-pc-key": identity,
+        "x-pc-time": str(sync.clock.ms),
+        "x-pc-nonce": random_id(),
+        "x-pc-sig": b64url(bytes([1]) + bytes(63)),
+    }
+    refused = await sync.client.post(
+        f"/v1/spaces/{random_id()}", content=b'{"licence": "x"}', headers=forged
+    )
+    assert (refused.status_code, refused.json()) == (401, {"error": "unauthorized"})
+    added = await sync.call(owner, "PUT", f"/v1/spaces/{space}/members/{identity}")
+    assert (added.status, added.error) == (404, "not_found")
+    to = await sync.push(owner, space, padded(1024), to=identity)
+    assert (to.status, to.error) == (400, "bad_recipient")
+
+
+def test_a_key_has_one_spelling() -> None:
+    """Base64 leaves two bits spare in 43 characters, so four texts decode to one key. Only
+    the one the app writes is a key here, so a member has one name."""
+    member = new_member()
+    raw = from_b64url(member.key)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    last = alphabet.index(member.key[-1])
+    spellings = [member.key[:-1] + alphabet[(last & ~3) | n] for n in range(4)]
+    assert all(from_b64url(spelling) == raw for spelling in spellings)
+    assert [spelling for spelling in spellings if is_key(spelling)] == [member.key]
+
+
+async def test_a_content_length_that_is_not_plain_digits_is_not_a_server_error(
+    sync: Sync,
+) -> None:
+    """An HTTP server would refuse such a header itself; the app must not fall over if one
+    lets it through."""
+    status, body = await _raw_http(
+        sync.app,
+        "GET",
+        f"/v1/spaces/{random_id()}",
+        {"content-length": "²"},
+        [{"type": "http.request", "body": b"", "more_body": False}],
+    )
+    assert (status, json.loads(body)) == (401, {"error": "unauthorized"})
+
+
+async def test_a_caller_who_goes_away_mid_body_is_not_logged_as_an_error(
+    make_sync: MakeSync, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sync = await make_sync()
+    owner = new_member()
+    space = await sync.new_space(owner)
+    path = f"/v1/spaces/{space}/batches"
+    signed = sign(owner, "POST", path, padded(1024), sync.clock.ms)
+    capsys.readouterr()
+    status, _ = await _raw_http(
+        sync.app,
+        "POST",
+        path,
+        {**signed, "x-pc-batch": random_id()},
+        [{"type": "http.request", "body": padded(512), "more_body": True}],  # then gone
+    )
+    logged = capsys.readouterr().out
+    assert status != 500
+    assert "sync.error" not in logged
+    assert "Traceback" not in logged
+    assert await sync.count(SyncBatch, SyncBatch.space_id == space) == 0
+
+
+async def test_the_size_cap_holds_for_a_body_sent_in_chunks(sync: Sync) -> None:
+    owner = new_member()
+    space = await sync.new_space(owner)
+    path = f"/v1/spaces/{space}/batches"
+    sent = 0
+
+    async def endless() -> AsyncIterator[bytes]:
+        nonlocal sent
+        while True:  # no Content-Length, and no end
+            sent += 64 * 1024
+            yield bytes(64 * 1024)
+
+    signed = sign(owner, "POST", path, b"", sync.clock.ms)
+    refused = await asyncio.wait_for(
+        sync.client.post(path, content=endless(), headers={**signed, "x-pc-batch": random_id()}),
+        timeout=10,
+    )
+    assert (refused.status_code, refused.json()) == (413, {"error": "too_large"})
+    assert sent <= MAX_BATCH_BYTES + 128 * 1024  # stopped reading just past the cap

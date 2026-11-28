@@ -15,6 +15,8 @@ from typing import Literal
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from ngome.core.ed25519 import is_small_order
+
 PROTOCOL = "pcsync v1"
 
 # A signed request must be within this much of the server's clock.
@@ -36,6 +38,12 @@ PULL_MAX_BYTES = 4 * 1024 * 1024
 
 # JSON numbers the phone can hold exactly (JavaScript's and Dart's safe integers).
 MAX_SAFE_INTEGER = 2**53 - 1
+
+# A body must arrive within this many seconds, plus the time its declared length takes at
+# the slowest rate allowed. A request is timed when its body has arrived, so holding a body
+# back gains nothing; this only stops a caller keeping a connection open for nothing.
+BODY_SECONDS = 10.0
+BODY_MIN_BYTES_PER_SECOND = 16 * 1024
 
 ID_LENGTH = 64
 KEY_LENGTH = 43
@@ -59,8 +67,12 @@ def is_id(value: str | None) -> bool:
 
 
 def is_key(value: str | None) -> bool:
-    """A member key is its 32-byte Ed25519 public key, base64url without padding."""
-    return value is not None and _KEY.fullmatch(value) is not None
+    """A member key is its 32-byte Ed25519 public key, base64url without padding: in the one
+    spelling the app writes, and not a point of small order."""
+    if value is None or _KEY.fullmatch(value) is None:
+        return False
+    raw = from_b64url(value)
+    return b64url(raw) == value and not is_small_order(raw)
 
 
 def b64url(data: bytes) -> str:
@@ -91,8 +103,10 @@ def verify_ed25519(key: str, message: bytes, signature: str) -> bool:
     """Whether ``signature`` (base64url) is ``key``'s (base64url, 32 bytes) over ``message``.
     A malformed key or signature is simply not valid."""
     try:
-        public = Ed25519PublicKey.from_public_bytes(from_b64url(key))
-        public.verify(from_b64url(signature), message)
+        raw = from_b64url(key)
+        if is_small_order(raw):
+            return False
+        Ed25519PublicKey.from_public_bytes(raw).verify(from_b64url(signature), message)
     except (ValueError, InvalidSignature):
         return False
     return True
@@ -119,13 +133,8 @@ class SignedParts:
 SignatureProblem = Literal["clock", "signature", "malformed"]
 
 
-def check_signature(
-    parts: SignedParts, method: str, path: str, body: bytes, now_ms: int
-) -> SignatureProblem | None:
-    """Check the clock and signature of a request; ``None`` when both are good.
-
-    The nonce's freshness is the caller's job, since it needs storage.
-    """
+def check_headers(parts: SignedParts, now_ms: int) -> SignatureProblem | None:
+    """What can be checked before the body is read: the headers' shape and the clock."""
     if (
         not is_key(parts.key)
         or _TIME.fullmatch(parts.time) is None
@@ -135,5 +144,19 @@ def check_signature(
         return "malformed"
     if abs(now_ms - int(parts.time)) > CLOCK_WINDOW_MS:
         return "clock"
+    return None
+
+
+def check_signature(
+    parts: SignedParts, method: str, path: str, body: bytes, now_ms: int
+) -> SignatureProblem | None:
+    """Check the clock and signature of a request; ``None`` when both are good.
+
+    ``now_ms`` must be read once the body has arrived. The nonce's freshness is the caller's
+    job, since it needs storage.
+    """
+    problem = check_headers(parts, now_ms)
+    if problem is not None:
+        return problem
     message = signing_string(method, path, parts.time, parts.nonce, sha256_b64url(body))
     return None if verify_ed25519(parts.key, message.encode(), parts.sig) else "signature"

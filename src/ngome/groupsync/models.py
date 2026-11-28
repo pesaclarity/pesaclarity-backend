@@ -3,11 +3,12 @@ else that links a space or a member key to an account, and none has a foreign ke
 account tables. Times and cursors are whole numbers, as they travel on the wire
 (milliseconds since 1970).
 
-The batches themselves are ciphertext in the blob store (``ngome.vault.storage``), under a
-random object key that names neither the space nor the member.
+The batches themselves, as the phones sent them, are in the blob store
+(``ngome.vault.storage``), under a random object key that names neither the space nor the
+member.
 """
 
-from sqlalchemy import BigInteger, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, ForeignKey, Integer, LargeBinary, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ngome.db.base import Base
@@ -16,6 +17,7 @@ from ngome.vault.models import OBJECT_KEY_LENGTH
 
 # base64url of a SHA-256.
 HASH_LENGTH = 43
+NONCE_DIGEST_BYTES = 32
 
 
 class SyncSpace(Base):
@@ -43,7 +45,12 @@ class SyncMember(Base):
     )
     key: Mapped[str] = mapped_column(String(KEY_LENGTH), primary_key=True)
     added_at: Mapped[int] = mapped_column(BigInteger)
+    # The cursor they say they hold everything up to (the highest ``since`` they pulled
+    # from). Retention counts on it.
     acked: Mapped[int] = mapped_column(BigInteger, default=0)
+    # The furthest cursor a pull may have answered them with. A ``since`` beyond it is not
+    # from this space as it is now (the space was deleted and made again), and starts over.
+    served: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
 class SyncBatch(Base):
@@ -68,13 +75,17 @@ class SyncBatch(Base):
 
 
 class SyncNonce(Base):
-    """A nonce an accepted request used, kept until that request could no longer pass the
-    clock check, so the same signed request is refused a second time."""
+    """A nonce an accepted request used, kept until a minute after that request could no
+    longer pass the clock check, so the same signed request is refused a second time.
+
+    Only a digest is kept: SHA-256 over the space id and the nonce. So a nonce can outlive
+    its space, which is what refuses a copy of an old request once a space is deleted and
+    made again, and still no row names a deleted space.
+    """
 
     __tablename__ = "sync_nonces"
 
-    space_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
-    nonce: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    digest: Mapped[bytes] = mapped_column(LargeBinary(NONCE_DIGEST_BYTES), primary_key=True)
     expires_at: Mapped[int] = mapped_column(BigInteger, index=True)
 
 

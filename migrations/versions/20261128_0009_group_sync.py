@@ -2,7 +2,11 @@
 
 Five tables for the relay: spaces, members, the batch index, seen nonces and the note a push
 leaves before it writes an object. None holds an account id or has a foreign key to the
-account tables; batch bytes go to the blob store.
+account tables; batch bytes go to the blob store. A nonce is kept as a digest only, so it
+can outlive its space without naming it.
+
+Going back queues every stored batch for deletion before the tables go, so no object is left
+behind with nothing pointing at it; the next ``ngome-purge`` deletes them.
 
 Revision ID: 0009
 Revises: 0008
@@ -10,6 +14,7 @@ Create Date: 2026-11-28 15:00:00.000000
 """
 
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 import sqlalchemy as sa
 from alembic import op
@@ -23,10 +28,9 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "sync_nonces",
-        sa.Column("space_id", sa.String(length=64), nullable=False),
-        sa.Column("nonce", sa.String(length=64), nullable=False),
+        sa.Column("digest", sa.LargeBinary(length=32), nullable=False),
         sa.Column("expires_at", sa.BigInteger(), nullable=False),
-        sa.PrimaryKeyConstraint("space_id", "nonce", name=op.f("pk_sync_nonces")),
+        sa.PrimaryKeyConstraint("digest", name=op.f("pk_sync_nonces")),
     )
     op.create_index(op.f("ix_sync_nonces_expires_at"), "sync_nonces", ["expires_at"], unique=False)
     op.create_table(
@@ -77,6 +81,7 @@ def upgrade() -> None:
         sa.Column("key", sa.String(length=43), nullable=False),
         sa.Column("added_at", sa.BigInteger(), nullable=False),
         sa.Column("acked", sa.BigInteger(), nullable=False),
+        sa.Column("served", sa.BigInteger(), nullable=False),
         sa.ForeignKeyConstraint(
             ["space_id"],
             ["sync_spaces.id"],
@@ -87,7 +92,28 @@ def upgrade() -> None:
     )
 
 
+def _queue_objects_for_deletion() -> None:
+    """Hand every object the sync tables point at to the vault's deletion queue."""
+    queue = sa.table(
+        "vault_blob_deletions",
+        sa.column("object_key", sa.String),
+        sa.column("queued_at", sa.DateTime(timezone=True)),
+        sa.column("attempts", sa.Integer),
+    )
+    now = sa.literal(datetime.now(UTC), type_=sa.DateTime(timezone=True))
+    for name in ("sync_batches", "sync_pending_blobs"):
+        source = sa.table(name, sa.column("object_key", sa.String))
+        already = sa.select(queue.c.object_key).where(queue.c.object_key == source.c.object_key)
+        op.execute(
+            queue.insert().from_select(
+                ["object_key", "queued_at", "attempts"],
+                sa.select(source.c.object_key, now, sa.literal(0)).where(~already.exists()),
+            )
+        )
+
+
 def downgrade() -> None:
+    _queue_objects_for_deletion()
     op.drop_table("sync_members")
     op.drop_index(op.f("ix_sync_batches_at"), table_name="sync_batches")
     op.drop_table("sync_batches")

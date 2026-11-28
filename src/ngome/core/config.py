@@ -12,6 +12,8 @@ from email_validator import EmailNotValidError, validate_email
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from ngome.core.ed25519 import is_small_order
+
 Environment = Literal["development", "test", "production"]
 
 _MIN_SECRET_LENGTH = 32
@@ -285,7 +287,11 @@ class Settings(BaseSettings):
             raw = b""
         if len(raw) != _ED25519_KEY_BYTES or re.fullmatch(r"[A-Za-z0-9_-]{43}", text) is None:
             raise ValueError("licence_public_key must be a 32-byte Ed25519 public key in base64url")
-        return text
+        if is_small_order(raw):
+            # All zeros, the identity and their kin verify forged signatures.
+            raise ValueError("licence_public_key is not a usable Ed25519 public key")
+        # One spelling, so it is the text the licence check compares and decodes.
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
     @property
     def admin_origins(self) -> tuple[str, ...]:

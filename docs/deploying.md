@@ -146,7 +146,7 @@ gh workflow run "Sync settings"
 
 The routes under `/v1/spaces` ship with the server (README, "Group sync"). Until the licence key is set they refuse every licence, so no shared space can be made. Before turning it on, in this order:
 
-1. **Request logs.** The server's own log lines carry no space id, member key or address. Google's request log does record each request's URL, which holds the space id, and the caller's address, and keeps them for 30 days by default. Decision 0033 allows no address in logs beyond 7 days. Excluding these routes, as for app status and crash reports, keeps that rule. It is the owner's call, since the routes then leave no request log to look back at:
+1. **Request logs.** The server's own log lines carry no space id, member key or address. Google's request log does record each request's URL, which holds the space id and, for `…/members/{key}`, a member's key, and the caller's address, and keeps them for 30 days by default. Decision 0033 allows no address in logs beyond 7 days. Excluding these routes, as for app status and crash reports, keeps that rule. It is the owner's call, since the routes then leave no request log to look back at:
 
    ```sh
    gcloud logging sinks update _Default --project "$GCP_PROJECT_ID" \

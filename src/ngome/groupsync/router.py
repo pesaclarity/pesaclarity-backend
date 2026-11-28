@@ -6,13 +6,14 @@ signed with the member's Ed25519 space key (``X-PC-Key``, ``X-PC-Time``, ``X-PC-
 ``X-PC-Sig``), and nothing here reads or stores an account id.
 
 Answers are JSON. A refusal is ``{"error": "<code>"}``. Bodies are never parsed (a batch is
-ciphertext) and never logged; log lines carry outcomes, counts and sizes only, with no space
-id, member key or address. The caller's address is used once, as a key in this instance's
-memory for the flood limit, and is not stored.
+the phone's sealed file, passed on as it came) and never logged; log lines carry outcomes,
+counts and sizes only, with no space id, member key or address. The caller's address is used
+once, as a key in this instance's memory for the flood limit, and is not stored.
 
 Live notices over a WebSocket (``/ws``) are not served here; phones pull.
 """
 
+import asyncio
 import traceback
 from collections.abc import Awaitable, Callable
 from typing import cast
@@ -20,12 +21,14 @@ from typing import cast
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.requests import ClientDisconnect
 
 from ngome.core.client import client_address
 from ngome.core.config import Settings
 from ngome.core.logging import get_logger
 from ngome.groupsync import service
 from ngome.groupsync.protocol import (
+    BODY_MIN_BYTES_PER_SECOND,
     HEADER_BATCH,
     HEADER_KEY,
     HEADER_NONCE,
@@ -34,6 +37,7 @@ from ngome.groupsync.protocol import (
     HEADER_TO,
     MAX_BODY_BYTES,
     SignedParts,
+    check_headers,
     check_signature,
     is_id,
     is_key,
@@ -74,26 +78,46 @@ def _check_address(request: Request, state: GroupSync, now: int) -> None:
         raise RefusedError(429, "rate_limited")
 
 
-async def _read_body(request: Request) -> bytes:
+def _declared_length(request: Request) -> int | None:
+    """The Content-Length, when it is there and is plain digits."""
     declared = request.headers.get("content-length")
-    if declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
-        raise RefusedError(413, "too_large")
+    if declared is None or not (declared.isascii() and declared.isdigit()):
+        return None
+    return int(declared)
+
+
+async def _read_body(request: Request, state: GroupSync) -> bytes:
+    """The whole body, up to the cap, within its deadline: a base time plus what its
+    declared length takes at the slowest rate allowed."""
+    declared = min(_declared_length(request) or 0, MAX_BODY_BYTES)
     body = bytearray()
-    async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > MAX_BODY_BYTES:
-            raise RefusedError(413, "too_large")
+    try:
+        async with asyncio.timeout(state.body_seconds + declared / BODY_MIN_BYTES_PER_SECOND):
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > MAX_BODY_BYTES:
+                    raise RefusedError(413, "too_large")
+    except TimeoutError:
+        raise RefusedError(408, "too_slow") from None
     return bytes(body)
+
+
+def _refuse(problem: str | None) -> None:
+    if problem is not None:
+        raise RefusedError(401, "clock" if problem == "clock" else "unauthorized")
 
 
 async def _open(request: Request, space: str, state: GroupSync) -> Call:
     """Everything checked before the database is touched: the space id's shape, the flood
-    limit, the body's size, the clock and the signature."""
-    now = state.clock()
+    limit, the body's size, the clock and the signature.
+
+    The clock is read when the body has arrived, and that reading is the request's time from
+    then on. A body held back, to slip a copy of an old request past the clock check, gains
+    nothing. What the headers alone decide is refused before the body is read at all.
+    """
     if not is_id(space):
         raise RefusedError(404, "not_found")
-    _check_address(request, state, now)
-    body = await _read_body(request)
+    _check_address(request, state, state.clock())
     headers = request.headers
     parts = SignedParts(
         key=headers.get(HEADER_KEY, ""),
@@ -101,9 +125,12 @@ async def _open(request: Request, space: str, state: GroupSync) -> Call:
         nonce=headers.get(HEADER_NONCE, ""),
         sig=headers.get(HEADER_SIG, ""),
     )
-    problem = check_signature(parts, request.method, _signed_path(request), body, now)
-    if problem is not None:
-        raise RefusedError(401, "clock" if problem == "clock" else "unauthorized")
+    if (_declared_length(request) or 0) > MAX_BODY_BYTES:
+        raise RefusedError(413, "too_large")
+    _refuse(check_headers(parts, state.clock()))
+    body = await _read_body(request, state)
+    now = state.clock()
+    _refuse(check_signature(parts, request.method, _signed_path(request), body, now))
     return Call(space=space, signer=parts.key, parts=parts, body=body, now=now)
 
 
@@ -129,6 +156,10 @@ async def _serve(request: Request, space: str, operation: Operation) -> JSONResp
     except RefusedError as refusal:
         log.info("sync.refused", reason=refusal.code)
         return _json(refusal.status, {"error": refusal.code})
+    except ClientDisconnect:
+        # The caller went away while sending. Nobody is left to answer and nothing is wrong.
+        log.info("sync.refused", reason="client_gone")
+        return _json(400, {"error": "bad_request"})
     except Exception as error:
         # Database errors can quote the statement and its values, so no traceback is logged:
         # only the kind of error and where it was raised.
@@ -201,7 +232,7 @@ async def remove_member(request: Request, space: str, key: str) -> JSONResponse:
 
 @router.post("/{space}/batches")
 async def push_batch(request: Request, space: str) -> JSONResponse:
-    """Member: push one batch. The body is the padded ciphertext (1, 2, 4 ... 1024 KiB).
+    """Member: push one batch. The body is the padded file (1, 2, 4 ... 1024 KiB).
     ``X-PC-Batch`` is the batch id, which makes the call idempotent; ``X-PC-To`` names the
     one member it is for."""
     batch_id = request.headers.get(HEADER_BATCH)
