@@ -36,6 +36,7 @@ fl = [
 [project.scripts]
 ngome-purge = "ngome.auth.retention:main"
 ngome-app-status-key = "ngome.appstatus.signing:main"
+ngome-licence-key = "ngome.groupsync.licence:main"
 
 [build-system]
 requires = ["hatchling"]
