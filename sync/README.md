@@ -1,6 +1,6 @@
 # Group sync server
 
-> **Replaced.** Group sync is now served by the backend itself, at the same paths and with the same wire protocol ([decision 0035](https://github.com/pesaclarity/docs/blob/main/decisions/0035-group-sync-through-the-backend.md); `src/ngome/groupsync/` and "Group sync" in the [README](../README.md#group-sync)). This Worker is not deployed and will not be: there are no celld nodes, no separate domain and no separate bucket. It stays here as the reference for the protocol and its tests. The one thing it has that the backend does not is the WebSocket for live notices.
+> **Replaced.** Group sync is now served by the backend itself, at the same paths and with the same wire protocol ([decision 0035](https://github.com/pesaclarity/docs/blob/main/decisions/0035-group-sync-through-the-backend.md); `src/ngome/groupsync/` and "Group sync" in the [README](../README.md#group-sync)). This Worker will not be deployed: there are to be no celld nodes, no separate domain and no separate bucket. It stays here as the reference for the protocol and its tests. The one thing it has that the backend does not is the WebSocket for live notices.
 
 The relay for shared spaces that sync through a server ([decision 0033](https://github.com/pesaclarity/docs/blob/main/decisions/0033-group-sync-server-on-celld.md)). It is a Cloudflare-style Worker with one Durable Object per shared space. It runs on our own [celld](https://github.com/denoland/celld) nodes, pinned to **v0.6.3**.
 
