@@ -3,7 +3,8 @@
 Run daily from cron, a systemd timer or a Kubernetes CronJob with ``ngome-purge`` (see the
 README). The same run retries backup objects still queued for deletion, deletes counting
 digests and keys whose day or month has closed, old crash reports and groups, and expired
-admin sessions (ADR 0024).
+admin sessions (ADR 0024). For group sync (decision 0035) it deletes old nonces, batches
+every member has pulled past once they are old enough, and objects left by pushes that died.
 """
 
 import asyncio
@@ -24,6 +25,7 @@ from ngome.core.security import utcnow
 from ngome.counting.retention import purge_counting
 from ngome.crashes.service import purge_crashes
 from ngome.db.session import create_engine, create_sessionmaker
+from ngome.groupsync import service as group_sync
 from ngome.vault.service import SWEEP_BATCH, sweep_deletions
 from ngome.vault.storage import BlobStore, build_blob_store
 
@@ -42,6 +44,9 @@ class PurgeResult:
     crash_reports: int = 0
     crash_groups: int = 0
     admin_rows: int = 0
+    sync_batches: int = 0
+    sync_nonces: int = 0
+    sync_orphans: int = 0
 
 
 async def purge_expired(
@@ -58,6 +63,12 @@ async def purge_expired(
     counting = await purge_counting(session, settings, now=now)
     crash_reports, crash_groups = await purge_crashes(session, settings, today=now.date())
     admin_rows = await purge_admin(session, settings, now=now)
+    # Rows go now; their objects join the deletion queue that run() sweeps next.
+    sync = await group_sync.purge(
+        session,
+        now_ms=int(now.timestamp() * 1000),
+        min_keep_ms=int(timedelta(days=settings.retention_sync_batch_days).total_seconds() * 1000),
+    )
     result = PurgeResult(
         otp_challenges=cast(CursorResult[Any], otp).rowcount,
         auth_events=cast(CursorResult[Any], events).rowcount,
@@ -67,6 +78,9 @@ async def purge_expired(
         crash_reports=crash_reports,
         crash_groups=crash_groups,
         admin_rows=admin_rows,
+        sync_batches=sync.batches,
+        sync_nonces=sync.nonces,
+        sync_orphans=sync.orphans,
     )
     log.info("retention.purged", **dataclasses.asdict(result))
     return result

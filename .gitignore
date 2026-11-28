@@ -19,3 +19,5 @@ var/
 # Local deploy settings
 deploy.env
 cloud-run.env.yaml
+# Private keys made by ngome-licence-key; never commit one.
+*.key

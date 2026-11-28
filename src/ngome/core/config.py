@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -15,6 +16,7 @@ Environment = Literal["development", "test", "production"]
 
 _MIN_SECRET_LENGTH = 32
 _ED25519_SEED_BYTES = 32
+_ED25519_KEY_BYTES = 32
 _ORIGIN_PATTERN = r"^https?://[a-z0-9.-]+(:\d+)?$"
 _AES_KEY_BYTES = 32
 
@@ -201,6 +203,35 @@ class Settings(BaseSettings):
         "the downloads cards.",
     )
 
+    # Group sync for shared spaces (``/v1/spaces``, decisions 0033 and 0035).
+    licence_public_key: str | None = Field(
+        default=None,
+        description="The licence key's public half: base64url of the 32-byte Ed25519 key "
+        "(``ngome-licence-key new`` prints it). Not a secret. Unset, every licence is "
+        "refused, so no shared space can be made on this server.",
+    )
+    group_sync_key_requests_per_minute: int = Field(
+        default=120,
+        ge=1,
+        le=100_000,
+        description="Signed requests a member key may make to one space, per instance.",
+    )
+    group_sync_key_pushes_per_minute: int = Field(default=30, ge=1, le=100_000)
+    group_sync_address_requests_per_minute: int = Field(
+        default=300,
+        ge=1,
+        le=1_000_000,
+        description="Requests to the group sync routes from one address, per instance. The "
+        "address is only a key in memory and is never stored or logged.",
+    )
+    retention_sync_batch_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+        description="A synced batch is kept at least this long, and until every member it "
+        "is for has pulled past it (decision 0033).",
+    )
+
     vault_max_backup_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
     vault_keep_backups: int = Field(default=10, ge=1, le=100)
     vault_max_account_bytes: int = Field(
@@ -240,6 +271,21 @@ class Settings(BaseSettings):
         if sslmode and "ssl" not in query:
             query["ssl"] = sslmode
         return urlunsplit(parts._replace(scheme="postgresql+asyncpg", query=urlencode(query)))
+
+    @field_validator("licence_public_key")
+    @classmethod
+    def _licence_public_key(cls, value: str | None) -> str | None:
+        """Empty means unset. Standard base64 is taken too and kept as base64url."""
+        if value is None or not value.strip():
+            return None
+        text = value.strip().rstrip("=").replace("+", "-").replace("/", "_")
+        try:
+            raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+        except (binascii.Error, ValueError):
+            raw = b""
+        if len(raw) != _ED25519_KEY_BYTES or re.fullmatch(r"[A-Za-z0-9_-]{43}", text) is None:
+            raise ValueError("licence_public_key must be a 32-byte Ed25519 public key in base64url")
+        return text
 
     @property
     def admin_origins(self) -> tuple[str, ...]:

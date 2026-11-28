@@ -81,7 +81,8 @@ if $up; then
     docker compose up -d --wait db minio
 fi
 
-# Migrations on Postgres: upgrade, models match migrations, downgrade, concurrent migrations.
+# On Postgres: upgrade, models match migrations, downgrade, then the tests that need it
+# (concurrent migrations, admin limits across instances, group sync with several instances).
 if database_url="$(run python tool/services.py postgres "$postgres_server")"; then
   step "Migrations: alembic upgrade head" "fix the migration that failed above" \
     env NGOME_DATABASE_URL="$database_url" uv run --no-sync alembic upgrade head
@@ -90,11 +91,12 @@ if database_url="$(run python tool/services.py postgres "$postgres_server")"; th
     env NGOME_DATABASE_URL="$database_url" uv run --no-sync alembic check
   step "Migrations: alembic downgrade base" "fix the downgrade of the migration above" \
     env NGOME_DATABASE_URL="$database_url" uv run --no-sync alembic downgrade base
-  step "Migrations: concurrent (pytest -m postgres)" "fix the failing tests above" \
+  step "Postgres: migrations, limits and group sync at once (pytest -m postgres)" \
+    "fix the failing tests above" \
     env NGOME_DATABASE_URL="$database_url" NGOME_TEST_DATABASE_URL="$database_url" \
     uv run --no-sync pytest -m postgres
 else
-  skip "Migrations on Postgres" \
+  skip "Migrations and group sync on Postgres" \
     "No Postgres at NGOME_CHECK_POSTGRES_URL. Start it: docker compose up -d --wait db (or tool/check --up)"
 fi
 
@@ -107,7 +109,8 @@ else
     "No MinIO at $s3_endpoint. Start it: docker compose up -d --wait minio (or tool/check --up)"
 fi
 
-# The group sync server (sync/, decision 0033) on a local celld node.
+# The group sync Worker (sync/, decision 0033) on a local celld node. The backend's own
+# routes replace it (decision 0035) and are tested above; it is kept as the reference.
 if command -v celld >/dev/null && command -v npm >/dev/null; then
   step "Sync server: install (npm ci)" "see the npm output above" npm --prefix sync ci --silent
   step "Sync server: typecheck, unit and end-to-end tests (celld dev)" \

@@ -12,6 +12,7 @@ How the server runs in production, and the commands to set it up and look after 
 | Retention | The purge job (`ngome-purge`) | Cloud Scheduler starts it daily |
 | Sign-in email | Brevo, over SMTP | |
 | Backups | Postgres for now; Cloudflare R2 later ([Adding R2](#adding-r2)) | |
+| Group sync | The same service, database and blob store: nothing of its own to host ([Group sync](#group-sync-decision-0035)) | Off until `NGOME_LICENCE_PUBLIC_KEY` is set |
 
 GitHub wins: a setting edited directly on Cloud Run is replaced by the next sync. GitHub won't show a secret's value back; to read one, use Secret Manager (`gcloud secrets versions access latest --secret <name>`).
 
@@ -140,6 +141,33 @@ gh workflow run "Sync settings"
 **Country.** Off until DB-IP Lite's CC BY 4.0 licence is confirmed on db-ip.com. Then build the image with `--build-arg DBIP_COUNTRY_LITE_MONTH=<YYYY-MM>` (add it to the Cloud Build trigger and `tool/cloudbuild.yaml`), set `NGOME_COUNTRY_LOOKUP_ENABLED=true` and `NGOME_COUNTRY_DB_PATH=/app/data/dbip-country-lite.mmdb`, and refresh the month in each month's first deploy.
 
 **The purge job** now also deletes closed counting periods, old crash reports, expired dashboard sessions and codes, idle sign-in limits and audit entries over 90 days old, so point it at the new image after the deploy (see "After a deploy: the jobs' image").
+
+## Group sync (decision 0035)
+
+The routes under `/v1/spaces` ship with the server (README, "Group sync"). Until the licence key is set they refuse every licence, so no shared space can be made. Before turning it on, in this order:
+
+1. **Request logs.** The server's own log lines carry no space id, member key or address. Google's request log does record each request's URL, which holds the space id, and the caller's address, and keeps them for 30 days by default. Decision 0033 allows no address in logs beyond 7 days. Excluding these routes, as for app status and crash reports, keeps that rule. It is the owner's call, since the routes then leave no request log to look back at:
+
+   ```sh
+   gcloud logging sinks update _Default --project "$GCP_PROJECT_ID" \
+     --add-exclusion=name=ngome-no-sync-request-logs,description="Decision 0035: no request logs for group sync",filter='resource.type="cloud_run_revision" AND resource.labels.service_name="'"$CLOUD_RUN_SERVICE"'" AND log_id("run.googleapis.com/requests") AND httpRequest.requestUrl:"/v1/spaces/"'
+   ```
+
+2. **Object storage first.** Batches go to the blob store the vault uses. The server reads from one store at a time, so [add R2](#adding-r2) before the first space is made; batches left in Postgres could not be read after the move.
+3. **The purge job's image.** The daily purge now also deletes old nonces, batches everyone has pulled once they are 90 days old, and objects left by a push that died. Point it at the new image (see "After a deploy: the jobs' image").
+4. **The licence key.** Make the pair on your own machine, and keep the private key file offline; it goes nowhere near GitHub or Cloud Run until the licence issuer (decision 0032) needs it. The public key is not a secret, so it is a plain variable and needs no change to the Sync settings workflow:
+
+   ```sh
+   uv run ngome-licence-key new licence.key      # prints NGOME_LICENCE_PUBLIC_KEY=<key>
+   gh variable set NGOME_LICENCE_PUBLIC_KEY --env production --body "<key>"
+   gh workflow run "Sync settings"
+   ```
+
+   To turn group sync off again, remove the variable and sync. No new space can be made and none can be renewed; spaces that exist carry on until their licence runs out, then go read-only.
+
+The limits (`NGOME_GROUP_SYNC_KEY_REQUESTS_PER_MINUTE`, `NGOME_GROUP_SYNC_KEY_PUSHES_PER_MINUTE`, `NGOME_GROUP_SYNC_ADDRESS_REQUESTS_PER_MINUTE`) are kept in each instance's memory, so with the service's maximum of 3 instances a caller can get up to three times each. Many phones can share one address on a mobile network; raise the per-address limit if phones report `rate_limited`.
+
+To try it against a test build of the app, mint a licence with the private key (`uv run ngome-licence-key mint --key-file licence.key --days 30`). The app has no place to hold a licence yet (decision 0032), so a test build needs a small change to send it.
 
 ## Adding R2
 
@@ -273,6 +301,7 @@ After the first sync, Secret Manager holds the contact pepper as version 1. Keep
 | `NGOME_APP_ATTEST_ENABLED` | `false`, until there's an Apple team id. Then `true`, plus `NGOME_APP_ATTEST_APP_ID` (`<team id>.com.pesaclarity.app`) and `NGOME_APP_ATTEST_ENVIRONMENT` (`production`) |
 | `NGOME_VAULT_UNATTESTED_UPLOADS` | `allow`, because F-Droid builds can't attest |
 | `NGOME_VAULT_BLOB_STORE` | `postgres` until [R2](#adding-r2) |
+| `NGOME_LICENCE_PUBLIC_KEY` | Unset until group sync is turned on ([Group sync](#group-sync-decision-0035)). Then the licence key's public half, base64url |
 | `NGOME_PRIVACY_POLICY_SHA256` | The SHA-256 of each approved privacy policy, as a JSON list: `["<digest>"]`, where the digest is `sha256sum assets/policy/privacy_policy.md` in pesaclarity-app. Add each new version's digest when the app ships it, and keep older ones while older app versions are in use. Unset keeps the policy email off |
 | `FORWARDED_ALLOW_IPS` | `*` |
 | `NGOME_PROXY_HOPS` | `1` (the default). Where the caller's address sits in `X-Forwarded-For`, counted from the right: Cloud Run appends it last, and anything to its left is written by the caller. Set `2` only behind a Google load balancer |

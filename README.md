@@ -1,6 +1,6 @@
 # pesaclarity-backend
 
-The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free app for Android and iPhone that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has a few narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, combine clipped, noised federated model updates under secure aggregation, answer the app's signed update check, and count installs and take crash reports without identifiers ([ADR 0024](https://github.com/pesaclarity/docs/blob/main/decisions/0024-counting-installs-and-crash-reports.md)).
+The server for [Pesa Clarity](https://github.com/pesaclarity/docs), the free, ad-free app for Android and iPhone that turns M-Pesa and bank messages into a daily plan. All analysis runs on the phone, so this server never sees a transaction. It has a few narrow jobs: sign people in (a one-time code sent by email, or Google on the Play Store build), keep a backup vault of files the phone has already encrypted and that the server cannot read, combine clipped, noised federated model updates under secure aggregation, answer the app's signed update check, count installs and take crash reports without identifiers ([ADR 0024](https://github.com/pesaclarity/docs/blob/main/decisions/0024-counting-installs-and-crash-reports.md)), and pass sealed updates between the phones of a shared space ([decision 0035](https://github.com/pesaclarity/docs/blob/main/decisions/0035-group-sync-through-the-backend.md)).
 
 **Codename:** ngome, Swahili for "fortress".
 
@@ -18,9 +18,10 @@ The product spec and brand live in [pesaclarity/docs](https://github.com/pesacla
 | App status | The notices the team sends (updates, news), and how many check-ins got each one per day | Anything about who asked: no address, account or device id |
 | Install counts | Per open day and month, a random key and keyed digests of the phones' random monthly counting tokens, deleted when the period closes; totals by version, build and (months only, when country lookup is on) country | The token itself, the address, or any link between a total and a phone |
 | Crash reports | Reports people chose to send: app version and build, system version, chip, the kind of error and the stack as code offsets, with the day received (90 days); groups of them with counts and dates (a year after last seen) | Messages, amounts, names, numbers, file paths, the time, the address, any account or install id |
+| Group sync | Per shared space: its random id, the owner's and members' signing keys, the licence's "valid until", and each sealed batch (ciphertext in object storage under a random key; its id, sender key, recipient key, size, SHA-256 and time in Postgres) until every member it is for has pulled it and it is 90 days old; the nonces of accepted requests until they run out, ten minutes at most, then deleted by the next request or the daily purge | Keys that open a batch, anything readable, an account id, email or the licence itself, the caller's address, or any link between a space or member key and an account |
 | Admin dashboard | One admin user: username, Argon2id password hash, the authenticator secret encrypted with `NGOME_ADMIN_SECRET_KEY`, keyed hashes of recovery and emailed codes, optional passkeys (credential id, public key, counter, label); sessions and browsers as digests; failure counters and a 90-day audit log keyed by a hash of the address, with country and browser family | The password, codes or secret in plain text, full addresses, or a Google account |
 
-Accounts are optional: the app works fully without one, and only the vault needs sign-in.
+Accounts are optional: the app works fully without one, and only the vault needs sign-in. Group sync takes no sign-in at all: members sign each request with their space key.
 
 ## Quick start
 
@@ -55,6 +56,7 @@ To run everything in containers instead: `docker compose up --build`.
 | `GET /v1/app-status?version=&build=&platform=` | The newest app version and active notices for that build, signed with Ed25519. No account; nothing about the caller is logged or stored |
 | `POST` / `GET /v1/admin/app-notices`, `POST /v1/admin/app-notices/{id}/disable` | Create, list and stop notices (admin token) |
 | `POST /v1/crash-reports` | A crash report the person chose to send: exactly the schema below, 16 KB at most. No account, no cookie |
+| `POST` / `GET` / `DELETE /v1/spaces/{space}`, `PUT /v1/spaces/{space}/licence`, `PUT` / `DELETE /v1/spaces/{space}/members/{key}`, `POST` / `GET /v1/spaces/{space}/batches` | [Group sync](#group-sync) for a shared space: sealed batches pushed and pulled by its members. No account; each request is signed with the member's space key |
 | `POST /v1/admin/starter-user` | Make the dashboard's admin user with a temporary password, shown once; with `"reset": true`, start sign-in over (admin token) |
 | `GET /v1/admin/client-address` | The client address the server sees for this request, to check `NGOME_PROXY_HOPS` (admin token) |
 | `GET /v1/admin/passkeys`, `DELETE /v1/admin/passkeys/{id}` | List and remove the dashboard's passkeys (admin token) |
@@ -67,7 +69,7 @@ Google sign-in is off by default. To turn it on, set `NGOME_GOOGLE_SIGN_IN_ENABL
 
 ### Retention
 
-`ngome-purge` deletes one-time codes 24 hours after they expire and sign-in events after 90 days, then retries any backup objects still queued for deletion. It also deletes counting digests and keys when their period closes (a day's once the next day is over; a month's on the 2nd of the next month), daily install totals, notice reach and flood marks after 13 months (`NGOME_RETENTION_DAILY_COUNT_DAYS`), crash reports after 90 days (`NGOME_RETENTION_CRASH_REPORT_DAYS`), crash groups a year after they were last seen (`NGOME_RETENTION_CRASH_GROUP_DAYS`), and expired dashboard sessions, enrolment links and challenges. Monthly install totals are kept; they name no one. The periods are `NGOME_RETENTION_OTP_CHALLENGE_HOURS` and `NGOME_RETENTION_AUTH_EVENT_DAYS`; the defaults are provisional until the privacy policy fixes them, and the two must always agree. The job is safe to run more than once or concurrently, and exits non-zero if the purge fails or a queued object could not be deleted (it stays queued for the next run).
+`ngome-purge` deletes one-time codes 24 hours after they expire and sign-in events after 90 days, then retries any backup objects still queued for deletion. It also deletes counting digests and keys when their period closes (a day's once the next day is over; a month's on the 2nd of the next month), daily install totals, notice reach and flood marks after 13 months (`NGOME_RETENTION_DAILY_COUNT_DAYS`), crash reports after 90 days (`NGOME_RETENTION_CRASH_REPORT_DAYS`), crash groups a year after they were last seen (`NGOME_RETENTION_CRASH_GROUP_DAYS`), and expired dashboard sessions, enrolment links and challenges. Monthly install totals are kept; they name no one. For [group sync](#group-sync) it deletes nonces that have run out, batches that every member they are for has pulled past once they are 90 days old (`NGOME_RETENTION_SYNC_BATCH_DAYS`), and objects left by a push that died half way. The periods are `NGOME_RETENTION_OTP_CHALLENGE_HOURS` and `NGOME_RETENTION_AUTH_EVENT_DAYS`; the defaults are provisional until the privacy policy fixes them, and the two must always agree. The job is safe to run more than once or concurrently, and exits non-zero if the purge fails or a queued object could not be deleted (it stays queued for the next run).
 
 Run it once a day with the same environment as the API. On Cloud Run it is a job that Cloud Scheduler starts daily ([docs/deploying.md](docs/deploying.md)); elsewhere, pick whichever scheduler you already use.
 
@@ -226,6 +228,61 @@ It prints the username and a random 24-character temporary password, once. Open 
 
 `GET /v1/admin/passkeys` lists the passkeys and `DELETE /v1/admin/passkeys/{id}` removes one.
 
+### Group sync
+
+A shared space (a household, a chama) lives on each member's phone. The phones pass each other sealed `.pcshare` updates, by hand as files or through these routes ([decisions 0031](https://github.com/pesaclarity/docs/blob/main/decisions/0031-group-budgets.md), [0033](https://github.com/pesaclarity/docs/blob/main/decisions/0033-group-sync-server-on-celld.md) and [0035](https://github.com/pesaclarity/docs/blob/main/decisions/0035-group-sync-through-the-backend.md)). The server stores and passes on **ciphertext only**. It has no keys, never parses a batch and merges nothing; merging happens on the phones.
+
+It is the wire protocol of the Worker in [`sync/`](sync/README.md), which it replaces, so the app's `GroupSyncClient` needs no change. The app already uses this server's address when no `GROUP_SYNC_URL` is set.
+
+| Call | Who | What |
+| --- | --- | --- |
+| `POST /v1/spaces/{space}` `{"licence": "..."}` | owner | Makes the space. The signer becomes its owner and first member. Needs a valid licence with the `group-sync` feature. Answers `{"space", "validUntil"}` |
+| `GET /v1/spaces/{space}` | member | `{"owner", "members", "validUntil", "readOnly", "cursor"}` |
+| `PUT /v1/spaces/{space}/licence` `{"licence": "..."}` | owner | Renews the licence. `validUntil` only moves forward |
+| `PUT` / `DELETE /v1/spaces/{space}/members/{key}` | owner | Adds or removes a member key (at most 30 members). Adding answers `{"added": true, "cursor": N}`, or `{"added": false}` for a member who is already there |
+| `POST /v1/spaces/{space}/batches` | member | Pushes one batch. The body is the padded ciphertext. `X-PC-Batch` is the batch id, which makes the call idempotent; `X-PC-To` is the one member it is for (left out, it is for everyone). Answers `{"cursor", "duplicate"}` |
+| `GET /v1/spaces/{space}/batches?since=N` | member | The batches for this member after cursor `N`: `{"batches": [{"cursor", "id", "from", "at", "data"}], "next", "more", "readOnly"}`, at most 100 batches or 4 MiB at a time. Asking from `N` also tells the server the member holds everything up to `N` |
+| `DELETE /v1/spaces/{space}` | owner | Deletes every row of the space and every stored batch |
+| `GET /v1/spaces/{space}/ws` | | **Not served.** The Worker's WebSocket for live notices is not built here; the app does not use it and phones pull. A request or a WebSocket handshake gets `404` `{"error": "ws_not_available"}` |
+
+Errors are `{"error": "code"}`: `unauthorized`, `clock`, `replay` (401), `licence_malformed`, `licence_signature`, `licence_expired`, `licence_feature`, `licence_no_key` (402), `not_member`, `not_owner`, `read_only` (403), `not_found`, `ws_not_available` (404), `exists`, `batch_id_taken`, `space_full`, `owner_stays` (409), `not_padded`, `bad_request`, `bad_batch_id`, `bad_recipient`, `bad_cursor` (400), `too_large` (413), `rate_limited` (429), and `server_error` (500).
+
+**Signed requests.** There is no account sign-in on these routes. Each request is signed with the member's Ed25519 key, which the app derives from the member's share seed (`ShareSigner`); its base64url public key is the member's key on the server. Four headers carry the signature: `X-PC-Key`, `X-PC-Time` (milliseconds), `X-PC-Nonce` (random, 16 to 64 base64url characters) and `X-PC-Sig`. The signature covers these six lines:
+
+```
+pcsync v1
+METHOD
+/path?query
+time
+nonce
+base64url(SHA-256(body))
+```
+
+The time must be within 5 minutes of the server's clock. A nonce the space has seen within that window is refused (`replay`).
+
+**The rules.**
+
+- **Read-only on expiry.** When the owner's licence has run out, pulls still work, and pushes and new members are refused (`read_only`). The owner can always remove a member. Only "valid until" is kept from the licence.
+- **Padding.** A batch must be exactly 1, 2, 4 … 1024 KiB long. The phone pads it, so its length says little.
+- **Retention.** `ngome-purge` deletes a batch once every member it is for has pulled past it and it is at least 90 days old.
+- **Delete.** Deleting a space removes its rows and queues its objects for deletion in one transaction, then deletes the objects. Any the store does not delete at once stays queued and is retried by `ngome-purge`, as for backups.
+- **Rate limits**, in memory on each instance: per member key in a space, 120 requests and 30 pushes a minute (`NGOME_GROUP_SYNC_KEY_REQUESTS_PER_MINUTE`, `NGOME_GROUP_SYNC_KEY_PUSHES_PER_MINUTE`); per address, 300 requests a minute (`NGOME_GROUP_SYNC_ADDRESS_REQUESTS_PER_MINUTE`). With several instances a caller can get each instance's allowance. The address is the entry Cloud Run appends to `X-Forwarded-For` (`NGOME_PROXY_HOPS`); it is used only as a key in memory and never stored or logged.
+- **Logs** carry outcomes, counts and sizes only: no body, no space id, no member key and no address. Google's own request log does record the URL and the address, so the owner must exclude these routes from it ([docs/deploying.md](docs/deploying.md), "Group sync").
+
+**What is stored where.** Postgres (`ngome.groupsync.models`): `sync_spaces` (id, owner key, valid until, last cursor), `sync_members` (key, the cursor they have pulled past), `sync_batches` (cursor, batch id, sender, recipient, size, SHA-256, time, object key), `sync_nonces` and `sync_pending_blobs`. None has an account id or a foreign key to the account tables. The batches themselves go to the blob store the vault uses (`NGOME_VAULT_BLOB_STORE`), under a random key `sync/<32 hex>` that names neither the space nor the member. Move the blob store to object storage before turning group sync on: the server reads from one store at a time.
+
+**Several instances.** Each change to a space first locks its row, so a new batch takes the next cursor one at a time and a lower cursor is always committed before a higher one. A push is idempotent by batch id (a unique constraint backs the check). A request's nonce is written in the same transaction as what the request does, so one signed request sent to two instances is accepted once. A request is checked in this order: signature and clock, whether the space exists and the signer may do this, the per-key limits, then the nonce. So only a request that is otherwise allowed writes anything.
+
+**The licence.** Licence issuing ([decision 0032](https://github.com/pesaclarity/docs/blob/main/decisions/0032-annual-licence.md)) is not built. `ngome.groupsync.licence` checks the planned format, `pclic.1.<payload>.<sig>`: the payload is base64url JSON `{v, acct, plan, features, iat, exp}` and the signature is Ed25519 over `pclic.1.<payload>`. The public key goes in `NGOME_LICENCE_PUBLIC_KEY` (base64url of its 32 bytes; a public key, so a plain variable). While it is unset every licence is refused (`licence_no_key`), so no space can be made: that is the off switch.
+
+`ngome-licence-key` makes the key pair and mints licences for testing. The private key is written only to the file you name, readable by you alone, and is never printed. Keep it out of the repository (`*.key` is ignored by git). `mint` and `public` read it from `--key-file`, or from `NGOME_LICENCE_SIGNING_SEED` in the environment.
+
+```sh
+uv run ngome-licence-key new licence.key                       # prints NGOME_LICENCE_PUBLIC_KEY=...
+uv run ngome-licence-key mint --key-file licence.key --days 365
+uv run ngome-licence-key mint --key-file licence.key --minutes 10   # to watch a space go read-only
+```
+
 ### Backup storage
 
 Backup bytes go to a blob store chosen by `NGOME_VAULT_BLOB_STORE`: `postgres` (the default, for development and tests), `filesystem` (files under `NGOME_VAULT_FS_ROOT`, for development or a single-node install) or `s3`, which works with AWS S3, Cloudflare R2 and MinIO. The server only stores and returns ciphertext; it never holds a key that could decrypt it. Uploads and downloads stream, with the size cap, the account quota and the checksum checked on the way in. Metadata always stays in Postgres.
@@ -281,12 +338,14 @@ src/ngome/
   appstatus/ signed app status and admin notices
   counting/ install counts from the monthly counting token, country lookup, suppression
   crashes/  crash report schema, intake and grouping
+  groupsync/ group sync for shared spaces: signed requests, licence check, spaces, batches, retention
   admin/    the dashboard: sign-in, second factors, limits, audit, pages, templates and static files
   fl/       Flower aggregation server and its settings
   core/     settings, logging with redaction, token and hashing primitives
   db/       SQLAlchemy base, engine and model registry
 migrations/ Alembic migrations
 tests/      pytest suite (SQLite in a temp file; no Postgres needed)
+sync/       the group sync Worker for celld that groupsync/ replaces; kept for reference
 ```
 
 ## Testing
@@ -297,7 +356,7 @@ GitHub runs no checks; they run on your machine. Enable the pre-push hook once p
 tool/setup-hooks
 ```
 
-`tool/check` runs everything: ruff lint and format, mypy, the unit tests, the migrations on Postgres (upgrade, `alembic check` that models and migrations agree, downgrade, concurrent migrations), the object storage tests on MinIO and the Docker build. `tool/check --fast` runs only lint, format, types and unit tests. The unit tests always run; for the rest start the services first:
+`tool/check` runs everything: ruff lint and format, mypy, the unit tests, the migrations on Postgres (upgrade, `alembic check` that models and migrations agree, downgrade), the tests that need Postgres (concurrent migrations, admin limits across instances, and group sync end to end with several instances), the object storage tests on MinIO and the Docker build. `tool/check --fast` runs only lint, format, types and unit tests. The unit tests always run; for the rest start the services first:
 
 ```sh
 docker compose up -d --wait db minio   # or: tool/check --up
@@ -308,7 +367,7 @@ Without them those steps are skipped with a notice. The migration steps use a sc
 
 ## Not done yet
 
-Named `TODO` markers in the code cover loading and publishing the federated model. Play Integrity checks on federated updates come with the Flower deployment. From ADR 0024: uploading release symbols and the crash decode job, and the dashboard's federated-learning card, which fills in once the aggregator stores its rounds.
+Group sync waits on licence issuing (decision 0032); live notices over a WebSocket and snapshots (decision 0033) are not built. Named `TODO` markers in the code cover loading and publishing the federated model. Play Integrity checks on federated updates come with the Flower deployment. From ADR 0024: uploading release symbols and the crash decode job, and the dashboard's federated-learning card, which fills in once the aggregator stores its rounds.
 
 ## Get involved
 

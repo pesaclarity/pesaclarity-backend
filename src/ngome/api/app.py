@@ -24,6 +24,8 @@ from ngome.counting.service import FloodGate
 from ngome.crashes import router as crashes_router
 from ngome.db.migrate import upgrade_to_head
 from ngome.db.session import create_engine, create_sessionmaker
+from ngome.groupsync import router as group_sync_router
+from ngome.groupsync.service import GroupSync
 from ngome.integrity import router as integrity_router
 from ngome.integrity.apple import build_app_attest_policy, load_root_ca
 from ngome.integrity.play import build_integrity_verifier
@@ -100,6 +102,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.count_gate = FloodGate(settings.counting_max_new_per_hour)
     app.state.country_lookup = build_country_lookup(settings)
+    app.state.group_sync = GroupSync.from_settings(settings)
     app.state.downloads_source = (
         HttpDownloadsSource(settings.downloads_csv_url) if settings.downloads_csv_url else None
     )
@@ -123,17 +126,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return response
 
-    app.include_router(health.router)
-    app.include_router(auth_router.router)
-    app.include_router(account.router)
-    app.include_router(vault_router.router)
-    app.include_router(integrity_router.router)
-    app.include_router(privacy_router.router)
-    app.include_router(app_status_router.router)
-    app.include_router(app_status_router.admin_router)
-    app.include_router(crashes_router.router)
-    app.include_router(admin_router.web)
-    app.include_router(admin_router.api)
+    for routes in (
+        health.router,
+        auth_router.router,
+        account.router,
+        vault_router.router,
+        integrity_router.router,
+        privacy_router.router,
+        app_status_router.router,
+        app_status_router.admin_router,
+        crashes_router.router,
+        group_sync_router.router,
+        admin_router.web,
+        admin_router.api,
+    ):
+        app.include_router(routes)
     if settings.admin_origin is not None:
         app.mount(
             "/admin/static",

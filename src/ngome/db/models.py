@@ -17,6 +17,7 @@ from ngome.auth.models import Account, AuthEvent, Device, OtpChallenge, RefreshT
 from ngome.counting.models import CountFlood, CountKey, CountSeen, CountTotal, NoticeReach
 from ngome.crashes.models import CrashGroup, CrashGroupDay, CrashReportRow
 from ngome.db.base import Base
+from ngome.groupsync.models import SyncBatch, SyncMember, SyncNonce, SyncPendingBlob, SyncSpace
 from ngome.integrity.models import AppAttestChallenge, AppAttestKey
 from ngome.privacy.models import PolicyCopy
 from ngome.vault.models import Backup, BlobDeletion, StoredBlob
@@ -53,4 +54,9 @@ __all__ = [
     "PolicyCopy",
     "RefreshToken",
     "StoredBlob",
+    "SyncBatch",
+    "SyncMember",
+    "SyncNonce",
+    "SyncPendingBlob",
+    "SyncSpace",
 ]
