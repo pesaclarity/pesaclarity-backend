@@ -42,6 +42,26 @@ def redact_sensitive(
     return event_dict
 
 
+class _NoHandshakeLines(logging.Filter):
+    """Drops what Uvicorn's error logger writes about a WebSocket handshake.
+
+    Its line for each handshake carries the client's address and the path with its query
+    string, and is not part of the access log switched off below. No route here speaks
+    WebSocket: the group sync routes answer a handshake with 404, after which Uvicorn also
+    reports, as an error, that the handshake was not completed. Neither line is wanted; its
+    "connection rejected" line stays. Take the second pattern out if a WebSocket route is
+    ever added.
+    """
+
+    _PATTERNS = ('"WebSocket %s"', "ASGI callable returned without completing handshake")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not any(pattern in str(record.msg) for pattern in self._PATTERNS)
+
+
+_NO_HANDSHAKE_LINES = _NoHandshakeLines()
+
+
 def configure_logging(level: str = "INFO", *, json: bool = True) -> None:
     renderer: structlog.typing.Processor = (
         structlog.processors.JSONRenderer() if json else structlog.dev.ConsoleRenderer()
@@ -64,6 +84,7 @@ def configure_logging(level: str = "INFO", *, json: bool = True) -> None:
     logging.basicConfig(level=level.upper(), stream=sys.stdout, format="%(message)s")
     # Uvicorn's access log records client IPs and query strings; we log requests ourselves.
     logging.getLogger("uvicorn.access").disabled = True
+    logging.getLogger("uvicorn.error").addFilter(_NO_HANDSHAKE_LINES)
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:

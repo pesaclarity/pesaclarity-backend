@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -8,7 +9,7 @@ from pydantic import SecretStr, ValidationError
 
 from ngome.api.app import create_app
 from ngome.core.config import Settings
-from ngome.core.logging import REDACTED, redact_sensitive
+from ngome.core.logging import REDACTED, configure_logging, redact_sensitive
 from ngome.core.security import (
     InvalidTokenError,
     create_access_token,
@@ -31,6 +32,20 @@ def test_redaction_drops_sensitive_fields() -> None:
         "code": REDACTED,
         "backup_id": "abc",
     }
+
+
+def test_uvicorn_handshake_lines_are_not_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """Uvicorn's line for a WebSocket handshake holds the caller's address and the query."""
+    configure_logging("INFO", json=False)
+    uvicorn = logging.getLogger("uvicorn.error")
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        uvicorn.info('%s - "WebSocket %s" %d', "203.0.113.77:51234", "/v1/spaces/x/ws?sig=s", 404)
+        uvicorn.info('%s - "WebSocket %s" [accepted]', "203.0.113.77:51234", "/somewhere")
+        uvicorn.error("ASGI callable returned without completing handshake.")
+        uvicorn.info("connection rejected (404 Not Found)")
+    assert [record.getMessage() for record in caplog.records] == [
+        "connection rejected (404 Not Found)"
+    ]
 
 
 def test_access_token_round_trip_and_expiry(tmp_path: Path) -> None:
